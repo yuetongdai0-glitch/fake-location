@@ -29,7 +29,7 @@ export function buildManifest(input) {
       apkBytes: input.bytes,
       sha256: input.sha256,
       apkUrl:
-        `https://raw.githubusercontent.com/yuetongdai0-glitch/fake-location-releases/main/` +
+        `https://yuetongdai0-glitch.github.io/fake-location-releases/` +
         `releases/android/latest.apk?v=${input.versionCode}`,
     },
   }

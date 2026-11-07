@@ -32,7 +32,7 @@ flutter build apk --release
 node tool/release.mjs
 ```
 
-脚本会执行分析、测试、安卓打包，把最新 APK 以固定文件名发布到同账号的 `fake-location-releases` 公共仓库，更新 `update.json` 和下载页，删除发布仓库中的旧 APK，最后清理本项目 `build/` 和 Gradle 输出目录。
+脚本会执行分析、测试、安卓打包，把最新 APK 以固定文件名发布到同账号的 `fake-location-releases` 公共仓库，更新 `update.json` 和下载页，删除发布仓库中的旧 APK，最后清理本项目 `build/` 和 Gradle 输出目录。应用内下载使用 GitHub Pages 地址，获得更稳定的下载速度。
 
 可用参数：
 

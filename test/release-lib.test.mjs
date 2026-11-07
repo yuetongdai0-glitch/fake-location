@@ -22,7 +22,10 @@ test('更新清单使用固定 APK 路径和完整摘要', () => {
   assert.equal(manifest.appId, 'com.rz.fake_location')
   assert.equal(manifest.android.versionCode, 42)
   assert.equal(manifest.android.sha256, digest)
-  assert.match(manifest.android.apkUrl, /latest\.apk\?v=42$/)
+  assert.match(
+    manifest.android.apkUrl,
+    /^https:\/\/yuetongdai0-glitch\.github\.io\/fake-location-releases\/releases\/android\/latest\.apk\?v=42$/,
+  )
 })
 
 test('下载页不会漏掉安装包链接和摘要', () => {

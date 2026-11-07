@@ -46,3 +46,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# WorkBuddy 本地项目数据
+.workbuddy/

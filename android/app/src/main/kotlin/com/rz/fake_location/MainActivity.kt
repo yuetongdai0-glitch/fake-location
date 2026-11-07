@@ -3,12 +3,14 @@ package com.rz.fake_location
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.app.AppOpsManager
@@ -52,6 +54,42 @@ class MainActivity : FlutterActivity() {
         "granted" to floating.canShow(),
         "showing" to floating.isShowing,
     )
+
+    /**
+     * WiFi / 网络定位的干扰情况。
+     *
+     * 高德、微信这类应用会用自己的 SDK 做 WiFi 指纹定位，刷新时重新算一遍，
+     * 结果盖掉系统里的模拟位置。关掉 WiFi（或关闭“WiFi 扫描”）后它们就只能读系统位置。
+     */
+    private fun wifiStatus(): Map<String, Any> {
+        var enabled = false
+        var ssid: String? = null
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wm != null) {
+                enabled = wm.isWifiEnabled
+                @Suppress("DEPRECATION")
+                val info = wm.connectionInfo
+                val raw = info?.ssid
+                if (raw != null && raw != "<unknown>" && raw != "0x") {
+                    ssid = raw.trim('"')
+                }
+            }
+        } catch (_: Exception) {
+        }
+        // 即使 WiFi 开关关着，「WiFi 扫描始终可用」仍会让应用拿到热点信息
+        val scanAlways = try {
+            Settings.Global.getInt(contentResolver, "wifi_scan_always_enabled", 0) == 1
+        } catch (_: Exception) {
+            false
+        }
+        return mapOf(
+            "enabled" to enabled,
+            "ssid" to ssid,
+            "scanAlwaysAvailable" to scanAlways,
+            "interfering" to (enabled || scanAlways),
+        )
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -170,6 +208,17 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "overlayStatus" -> result.success(overlayStatus())
+                    "wifiStatus" -> result.success(wifiStatus())
+                    "openWifiSettings" -> {
+                        try {
+                            startActivity(
+                                Intent(Settings.ACTION_WIFI_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        } catch (_: Exception) {
+                        }
+                        result.success(null)
+                    }
                     "openOverlaySettings" -> {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                             try {

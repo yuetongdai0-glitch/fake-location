@@ -1074,7 +1074,9 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
               '如果高德仍显示原位，按顺序排查：\n'
               '① 打开高德后点一下右下角“定位”按钮——地图不会自动跟随；\n'
               '② 系统设置 → 应用 → 高德 → 权限 → 位置，改成“精确位置”；\n'
-              '③ 从最近任务里划掉高德，重新打开。',
+              '③ 从最近任务里划掉高德，重新打开；\n'
+              '④ 临时关掉 WiFi。高德/微信会用自己的 SDK 读 WiFi 热点指纹算位置，'
+              '刷新时会盖掉模拟值——典型表现就是“刚开始对，刷新一下又回原地”。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 height: 1.6,

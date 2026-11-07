@@ -261,7 +261,7 @@ class AppConfig {
     this.lastTarget,
     this.lastName,
     this.lastAddress,
-    this.intervalMs = 500,
+    this.intervalMs = 200,
     this.accuracyMeters = 5,
     this.floatBar = false,
     this.motion = MotionMode.walk,

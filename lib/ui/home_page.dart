@@ -539,7 +539,73 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
+  /// 本次会话是否已经提示过 WiFi 干扰。
+  bool _wifiPrompted = false;
+
+  /// 读 WiFi 状态。开着 WiFi 或「WiFi 扫描」时，第三方 SDK 会自己用热点指纹算位置，
+  /// 刷新后就把系统里的模拟值盖掉了——表现就是「刚开始对、刷新一下又回到原地」。
+  Future<Map<String, dynamic>> _wifiStatus() async {
+    try {
+      return await _mockChannel.invokeMapMethod<String, dynamic>('wifiStatus') ??
+          const {};
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// 开始模拟前确认 WiFi 干扰。返回 true 表示继续开始。
+  Future<bool> _confirmWifiInterference() async {
+    if (_wifiPrompted) return true;
+    final wifi = await _wifiStatus();
+    if (wifi['interfering'] != true) return true;
+    if (!mounted) return true;
+    _wifiPrompted = true;
+
+    final ssid = wifi['ssid'] as String?;
+    final scanAlways = wifi['scanAlwaysAvailable'] == true;
+    final reason = ssid != null
+        ? '当前连接着「$ssid」'
+        : scanAlways
+        ? '「WiFi 扫描始终可用」是开着的'
+        : 'WiFi 是开着的';
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('WiFi 会盖掉模拟位置'),
+        content: Text(
+          '$reason。\n\n'
+          '高德、微信这类应用会用自己的 SDK 读 WiFi 热点指纹算一次位置，'
+          '刷新时就盖掉系统里的模拟值——这就是「刚开始对、刷新一下又回原地」的原因。\n\n'
+          '临时关掉 WiFi（或关掉「WiFi 扫描」）后，它们只能读系统位置，模拟就稳了。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, 'cancel'),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, 'settings'),
+            child: const Text('去关闭 WiFi'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, 'proceed'),
+            child: const Text('仍然开始'),
+          ),
+        ],
+      ),
+    );
+
+    if (action == 'settings') {
+      await _mockChannel.invokeMethod('openWifiSettings');
+      return false;
+    }
+    return action == 'proceed';
+  }
+
   Future<void> _start() async {
+    if (!await _confirmWifiInterference()) return;
+    if (!mounted) return;
     final write = _writePoint;
     try {
       await _mockChannel.invokeMethod('start', {
@@ -1758,39 +1824,50 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                   ],
                 ),
-                Row(
-                  children: [
-                    _PanelAction(
-                      icon: Icons.open_with,
-                      label: '微调',
-                      onTap: _openNudge,
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      top: BorderSide(
+                        color: scheme.outlineVariant.withValues(alpha: 0.5),
+                      ),
                     ),
-                    _PanelAction(
-                      icon: Icons.pin_drop_outlined,
-                      label: '坐标',
-                      onTap: _openCoordinate,
-                    ),
-                    _PanelAction(
-                      icon: Icons.route_outlined,
-                      label: '路线',
-                      onTap: _openRoute,
-                    ),
-                    _PanelAction(
-                      icon: Icons.star_outline,
-                      label: '常用',
-                      onTap: _openSaved,
-                    ),
-                    _PanelAction(
-                      icon: Icons.verified_outlined,
-                      label: '检测',
-                      onTap: _openMockCheck,
-                    ),
-                    _PanelAction(
-                      icon: Icons.settings_outlined,
-                      label: '设置',
-                      onTap: _openSettings,
-                    ),
-                  ],
+                  ),
+                  child: Row(
+                    children: [
+                      _PanelAction(
+                        icon: Icons.open_with,
+                        label: '微调',
+                        onTap: _openNudge,
+                      ),
+                      _PanelAction(
+                        icon: Icons.pin_drop_outlined,
+                        label: '坐标',
+                        onTap: _openCoordinate,
+                      ),
+                      _PanelAction(
+                        icon: Icons.route_outlined,
+                        label: '路线',
+                        onTap: _openRoute,
+                      ),
+                      _PanelAction(
+                        icon: Icons.star_outline,
+                        label: '常用',
+                        onTap: _openSaved,
+                      ),
+                      _PanelAction(
+                        icon: Icons.verified_outlined,
+                        label: '检测',
+                        onTap: _openMockCheck,
+                      ),
+                      _PanelAction(
+                        icon: Icons.settings_outlined,
+                        label: '设置',
+                        onTap: _openSettings,
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -1861,16 +1938,18 @@ class _PanelAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 20, color: scheme.onSurfaceVariant),
-              const SizedBox(height: 2),
+              Icon(icon, size: 22, color: scheme.onSurfaceVariant),
+              const SizedBox(height: 3),
               Text(
                 label,
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: scheme.onSurfaceVariant,
+                  fontSize: 11,
+                  height: 1.1,
                 ),
               ),
             ],

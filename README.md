@@ -52,4 +52,4 @@ RELEASE_REPO_DIR=/path/to/fake-location-releases node tool/release.mjs
 
 更新清单：
 
-<https://raw.githubusercontent.com/yuetongdai0-glitch/fake-location-releases/main/update.json>
+<https://yuetongdai0-glitch.github.io/fake-location-releases/update.json>

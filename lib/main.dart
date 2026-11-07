@@ -18,7 +18,7 @@ void main() => runApp(
 const _ch = MethodChannel('fake_location/mock');
 const _updateCh = MethodChannel('fake_location/update');
 const _updateManifestUrl =
-    'https://raw.githubusercontent.com/yuetongdai0-glitch/fake-location-releases/main/update.json';
+    'https://yuetongdai0-glitch.github.io/fake-location-releases/update.json';
 
 /// 应用更新清单，只描述安卓最新版安装包及其完整性信息。
 class AppUpdate {

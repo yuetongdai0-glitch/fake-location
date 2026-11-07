@@ -151,7 +151,7 @@ try {
     console.log('⑦ 清理本地构建产物')
   }
   console.log(`\n下载页：https://yuetongdai0-glitch.github.io/fake-location-releases/`)
-  console.log(`更新清单：https://raw.githubusercontent.com/yuetongdai0-glitch/fake-location-releases/main/update.json`)
+  console.log(`更新清单：https://yuetongdai0-glitch.github.io/fake-location-releases/update.json`)
 } finally {
   // 构建失败或中止时也删除本地产物，避免留下可被误传的大 APK。
   if (!dryRun) await cleanBuildOutput()

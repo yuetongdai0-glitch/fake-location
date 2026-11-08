@@ -428,7 +428,7 @@ class SettingsSheet extends StatefulWidget {
   final bool checkingUpdate;
   final bool updateBusy;
   final Future<void> Function(AppConfig) onConfigChanged;
-  final Future<void> Function() onCheckUpdate;
+  final Future<AppUpdate?> Function() onCheckUpdate;
   final Future<void> Function(AppUpdate) onInstallUpdate;
   final Future<void> Function(String url) onOpenUrl;
   final AppStorage storage;
@@ -444,6 +444,58 @@ class _SettingsSheetState extends State<SettingsSheet> {
 
   Future<void> _apply() async {
     await widget.onConfigChanged(_config);
+  }
+
+  // 更新状态放在面板内部：这是独立路由，首页 setState 不会重建这里，
+  // 反馈（转圈、结果、失败原因）必须就地显示，否则点了像没反应。
+  late AppUpdate? _available = widget.availableUpdate;
+  late bool _checked = widget.updateChecked;
+  bool _checking = false;
+  bool _busy = false;
+  String? _updateError;
+
+  Future<void> _checkUpdate() async {
+    if (_checking || _busy) return;
+    setState(() {
+      _checking = true;
+      _updateError = null;
+    });
+    try {
+      final latest = await widget.onCheckUpdate();
+      if (!mounted) return;
+      setState(() {
+        _available = latest;
+        _checked = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _updateError = _updateMessage(e));
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  Future<void> _install(AppUpdate update) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _updateError = null;
+    });
+    try {
+      await widget.onInstallUpdate(update);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _updateError = _updateMessage(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _updateMessage(Object error) {
+    final text = error is PlatformException
+        ? (error.message ?? error.code)
+        : '$error';
+    return text.replaceFirst('Exception: ', '');
   }
 
   void _toast(String message) {
@@ -859,13 +911,17 @@ class _SettingsSheetState extends State<SettingsSheet> {
               widget.versionName.isEmpty ? '虚拟定位' : '虚拟定位 ${widget.versionName}',
             ),
             subtitle: Text(
-              widget.availableUpdate != null
-                  ? '发现新版本 ${widget.availableUpdate!.versionName}'
-                  : widget.updateChecked
+              _busy
+                  ? '正在下载安装包…'
+                  : _checking
+                  ? '正在检查…'
+                  : _available != null
+                  ? '发现新版本 ${_available!.versionName}'
+                  : _checked
                   ? '已是最新版本'
                   : '尚未检查更新',
             ),
-            trailing: widget.checkingUpdate || widget.updateBusy
+            trailing: _checking || _busy
                 ? const SizedBox(
                     width: 20,
                     height: 20,
@@ -873,17 +929,25 @@ class _SettingsSheetState extends State<SettingsSheet> {
                   )
                 : TextButton(
                     onPressed: () {
-                      if (widget.availableUpdate != null) {
-                        widget.onInstallUpdate(widget.availableUpdate!);
+                      if (_available != null) {
+                        _install(_available!);
                       } else {
-                        widget.onCheckUpdate();
+                        _checkUpdate();
                       }
                     },
-                    child: Text(
-                      widget.availableUpdate == null ? '检查更新' : '立即更新',
-                    ),
+                    child: Text(_available == null ? '检查更新' : '立即更新'),
                   ),
           ),
+          if (_updateError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 40),
+              child: Text(
+                '更新失败：$_updateError',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFFD93025),
+                ),
+              ),
+            ),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(12),

@@ -147,11 +147,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (_) {
       // 版本读取失败时仍保留手动检查入口。
     }
-    await _checkUpdate(manual: false);
+    try {
+      await _checkUpdate(manual: false);
+    } catch (_) {
+      // 自动检查失败不打扰用户，手动检查会就地显示原因。
+    }
   }
 
-  Future<void> _checkUpdate({required bool manual}) async {
-    if (_checkingUpdate || _updateBusy) return;
+  Future<AppUpdate?> _checkUpdate({required bool manual}) async {
+    if (_checkingUpdate || _updateBusy) return null;
     setState(() => _checkingUpdate = true);
     try {
       final latest = await fetchLatestUpdate();
@@ -159,25 +163,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _installedVersionCode > 0 && latest.isNewerThan(_installedVersionCode)
           ? latest
           : null;
-      if (!mounted) return;
+      if (!mounted) return available;
       final fresh = available != null && _availableUpdate == null;
-      setState(() => _availableUpdate = available);
-      _updateChecked = true;
-      if (manual) {
-        _toast(
-          available == null
-              ? '当前已是最新版本 ${_installedVersionName.isEmpty ? '' : _installedVersionName}'
-              : '发现新版本 ${available.versionName}',
-        );
-      } else if (fresh) {
+      setState(() {
+        _availableUpdate = available;
+        _updateChecked = true;
+      });
+      // 手动检查由设置面板自己就地展示结果，这里只在自动检查时提示
+      if (!manual && fresh) {
         _toastWithAction(
           '发现新版本 ${latest.versionName}',
           '更新',
           () => _installUpdate(latest),
         );
       }
-    } catch (e) {
-      if (manual && mounted) _toast('检查更新失败：${_friendly(e)}');
+      return available;
     } finally {
       if (mounted) setState(() => _checkingUpdate = false);
     }

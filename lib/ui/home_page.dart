@@ -28,6 +28,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   static const _defaultTarget = LatLng(39.908722, 116.397499); // 天安门（GCJ-02）
 
   final MapController _map = MapController();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TextEditingController _searchCtrl = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
@@ -908,29 +909,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _openMore() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (c) => MoreSheet(
-        onNudge: () {
-          Navigator.pop(c);
-          _openNudge();
-        },
-        onMockCheck: () {
-          Navigator.pop(c);
-          _openMockCheck();
-        },
-        onSettings: () {
-          Navigator.pop(c);
-          _openSettings();
-        },
-      ),
-    );
-  }
-
   Future<void> _openSettings() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -1094,6 +1072,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
     }
     return Scaffold(
+      key: _scaffoldKey,
+      drawer: _buildDrawer(theme),
       body: Stack(
         children: [
           _buildMap(theme),
@@ -1116,6 +1096,198 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (_joystickOn) _buildJoystick(theme),
           _buildTargetPanel(theme),
         ],
+      ),
+    );
+  }
+
+  /// 侧边抽屉：参考 Fake Location 的分组菜单，底部不再放 tab。
+  Widget _buildDrawer(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    return Drawer(
+      backgroundColor: scheme.surface,
+      shape: const RoundedRectangleBorder(),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 26, 20, 24),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [scheme.primary, const Color(0xFF14A18C)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: const BorderRadius.only(
+                  bottomRight: Radius.circular(26),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(9),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.20),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.my_location,
+                          color: Colors.white,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Text(
+                        '虚拟定位',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 19,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      _installedVersionName.isEmpty
+                          ? '免 Root 位置模拟'
+                          : 'v$_installedVersionName · 免 Root',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  _drawerItem(theme, Icons.place_outlined, '位置模拟', selected: true),
+                  _drawerItem(
+                    theme,
+                    Icons.pin_drop_outlined,
+                    '坐标输入',
+                    onTap: _openCoordinate,
+                  ),
+                  _drawerItem(
+                    theme,
+                    Icons.route_outlined,
+                    '路线模拟',
+                    onTap: _openRoute,
+                  ),
+                  _drawerItem(
+                    theme,
+                    Icons.control_camera_outlined,
+                    '摇杆移动',
+                    onTap: _toggleJoystick,
+                  ),
+                  _drawerItem(
+                    theme,
+                    Icons.star_outline,
+                    '常用地点',
+                    onTap: _openSaved,
+                  ),
+                  const Divider(indent: 16, endIndent: 16, height: 16),
+                  _drawerItem(
+                    theme,
+                    Icons.open_with,
+                    '微调位置',
+                    onTap: _openNudge,
+                  ),
+                  _drawerItem(
+                    theme,
+                    Icons.verified_outlined,
+                    '生效检测',
+                    onTap: _openMockCheck,
+                  ),
+                  _drawerItem(
+                    theme,
+                    Icons.settings_outlined,
+                    '设置',
+                    onTap: _openSettings,
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: scheme.outlineVariant),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.shield_outlined,
+                    size: 14,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '免 Root 方案 · 仅用于开发调试与学习',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _drawerItem(
+    ThemeData theme,
+    IconData icon,
+    String title, {
+    bool selected = false,
+    VoidCallback? onTap,
+  }) {
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+      child: ListTile(
+        dense: true,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        tileColor: selected ? scheme.primary.withValues(alpha: 0.10) : null,
+        leading: Icon(
+          icon,
+          size: 20,
+          color: selected ? scheme.primary : scheme.onSurfaceVariant,
+        ),
+        title: Text(
+          title,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            color: selected ? scheme.primary : scheme.onSurface,
+          ),
+        ),
+        onTap: () {
+          Navigator.of(context).pop();
+          if (!selected && onTap != null) {
+            // 等抽屉收起再打开下一个面板，避免两个路由打架
+            Future<void>.delayed(const Duration(milliseconds: 220), onTap);
+          }
+        },
       ),
     );
   }
@@ -1306,56 +1478,73 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _buildSearchBar(ThemeData theme) {
     final scheme = theme.colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Material(
-        elevation: 4,
-        shadowColor: Colors.black26,
-        borderRadius: BorderRadius.circular(26),
-        color: scheme.surface,
-        child: SizedBox(
-          height: 52,
-          child: Row(
-            children: [
-              const SizedBox(width: 14),
-              Icon(Icons.search, color: scheme.onSurfaceVariant),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _searchCtrl,
-                  focusNode: _searchFocus,
-                  textInputAction: TextInputAction.search,
-                  onSubmitted: (_) => _search(),
-                  onChanged: _onQueryChanged,
-                  decoration: const InputDecoration(
-                    hintText: '搜索地点，或输入 29.75,106.58',
-                    hintMaxLines: 1,
-                  ),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+      child: Container(
+        height: 50,
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: scheme.outlineVariant),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x14000000),
+              blurRadius: 12,
+              offset: Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: '菜单',
+              icon: const Icon(Icons.menu_rounded, size: 22),
+              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+            ),
+            Expanded(
+              child: TextField(
+                controller: _searchCtrl,
+                focusNode: _searchFocus,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _search(),
+                onChanged: _onQueryChanged,
+                decoration: const InputDecoration(
+                  hintText: '搜索地点，或输入 29.75,106.58',
+                  hintMaxLines: 1,
+                  isDense: true,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
                 ),
               ),
-              if (_searching)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              else if (_searchCtrl.text.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.close, size: 20),
-                  onPressed: () => setState(() {
-                    _searchCtrl.clear();
-                    _results = const [];
-                    _searchHint = null;
-                  }),
+            ),
+            if (_searching)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
+              )
+            else if (_searchCtrl.text.isNotEmpty)
               IconButton(
-                icon: const Icon(Icons.arrow_forward, size: 20),
-                onPressed: _search,
+                icon: const Icon(Icons.close_rounded, size: 20),
+                onPressed: () => setState(() {
+                  _searchCtrl.clear();
+                  _results = const [];
+                  _searchHint = null;
+                }),
               ),
-            ],
-          ),
+            IconButton(
+              tooltip: '搜索',
+              icon: Icon(
+                Icons.arrow_forward_rounded,
+                size: 20,
+                color: scheme.primary,
+              ),
+              onPressed: _search,
+            ),
+          ],
         ),
       ),
     );
@@ -1689,17 +1878,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       left: 0,
       right: 0,
       bottom: 0,
-      child: Material(
-        color: scheme.surface,
-        elevation: 12,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: Container(
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          border: Border(top: BorderSide(color: scheme.outlineVariant)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x16000000),
+              blurRadius: 18,
+              offset: Offset(0, -4),
+            ),
+          ],
+        ),
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 8, bottom: 8),
+                  decoration: BoxDecoration(
+                    color: scheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1792,22 +1999,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                   ],
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
                   decoration: BoxDecoration(
-                    color: scheme.surfaceContainerHighest,
+                    color: scheme.surfaceContainerLowest,
                     borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: scheme.outlineVariant),
                   ),
                   child: Row(
                     children: [
                       Icon(
                         Icons.place_outlined,
                         size: 15,
-                        color: scheme.onSurfaceVariant,
+                        color: scheme.primary,
                       ),
                       const SizedBox(width: 6),
                       Expanded(
@@ -1818,10 +2023,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           ),
                         ),
                       ),
-                      Text(
-                        _config.coordSystem.label,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: scheme.primary.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Text(
+                          _config.coordSystem.label,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                     ],
@@ -1833,54 +2049,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     Expanded(
                       child: FilledButton.icon(
                         onPressed: _start,
-                        icon: const Icon(Icons.play_arrow_rounded),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(46),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 20),
                         label: Text(_running ? '更新到此位置' : '开始模拟'),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: OutlinedButton.icon(
                         onPressed: _running ? _stop : null,
-                        icon: const Icon(Icons.stop_rounded),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(46),
+                          side: BorderSide(color: scheme.outlineVariant),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        icon: const Icon(Icons.stop_rounded, size: 20),
                         label: const Text('停止'),
                       ),
                     ),
                   ],
-                ),
-                Container(
-                  margin: const EdgeInsets.only(top: 8),
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(
-                    border: Border(
-                      top: BorderSide(
-                        color: scheme.outlineVariant.withValues(alpha: 0.5),
-                      ),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      _PanelAction(
-                        icon: Icons.pin_drop_outlined,
-                        label: '坐标',
-                        onTap: _openCoordinate,
-                      ),
-                      _PanelAction(
-                        icon: Icons.route_outlined,
-                        label: '路线',
-                        onTap: _openRoute,
-                      ),
-                      _PanelAction(
-                        icon: Icons.star_outline,
-                        label: '常用',
-                        onTap: _openSaved,
-                      ),
-                      _PanelAction(
-                        icon: Icons.more_horiz,
-                        label: '更多',
-                        onTap: _openMore,
-                      ),
-                    ],
-                  ),
                 ),
               ],
             ),
@@ -1907,65 +2101,37 @@ class _ControlButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: highlight ? scheme.primary : scheme.surface,
-      elevation: 3,
-      shadowColor: Colors.black26,
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Tooltip(
-          message: tooltip ?? '',
-          child: SizedBox(
-            width: 44,
-            height: 44,
-            child: Icon(
-              icon,
-              size: 22,
-              color: highlight ? scheme.onPrimary : scheme.onSurface,
-            ),
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: highlight ? scheme.primary : scheme.surface,
+        shape: BoxShape.circle,
+        border: highlight ? null : Border.all(color: scheme.outlineVariant),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x14000000),
+            blurRadius: 10,
+            offset: Offset(0, 2),
           ),
-        ),
+        ],
       ),
-    );
-  }
-}
-
-class _PanelAction extends StatelessWidget {
-  const _PanelAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 9),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 24, color: scheme.onSurfaceVariant),
-              const SizedBox(height: 3),
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                  fontSize: 12,
-                  height: 1.1,
-                ),
+      child: Material(
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Tooltip(
+            message: tooltip ?? '',
+            child: Center(
+              child: Icon(
+                icon,
+                size: 22,
+                color: highlight ? scheme.onPrimary : scheme.onSurface,
               ),
-            ],
+            ),
           ),
         ),
       ),

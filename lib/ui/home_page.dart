@@ -908,6 +908,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _openMore() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (c) => MoreSheet(
+        onNudge: () {
+          Navigator.pop(c);
+          _openNudge();
+        },
+        onMockCheck: () {
+          Navigator.pop(c);
+          _openMockCheck();
+        },
+        onSettings: () {
+          Navigator.pop(c);
+          _openSettings();
+        },
+      ),
+    );
+  }
+
   Future<void> _openSettings() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -1660,7 +1683,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final statusColor = _running ? const Color(0xFF17B978) : scheme.outline;
     final title = _targetName ??
         (_resolving ? '正在解析地址…' : (_targetAddress ?? '地图选点'));
-    final subtitle = _targetAddress ?? formatLatLng(_target);
+    final subtitle = _targetAddress ?? '未解析到地址';
 
     return Positioned(
       left: 0,
@@ -1837,11 +1860,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   child: Row(
                     children: [
                       _PanelAction(
-                        icon: Icons.open_with,
-                        label: '微调',
-                        onTap: _openNudge,
-                      ),
-                      _PanelAction(
                         icon: Icons.pin_drop_outlined,
                         label: '坐标',
                         onTap: _openCoordinate,
@@ -1857,14 +1875,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         onTap: _openSaved,
                       ),
                       _PanelAction(
-                        icon: Icons.verified_outlined,
-                        label: '检测',
-                        onTap: _openMockCheck,
-                      ),
-                      _PanelAction(
-                        icon: Icons.settings_outlined,
-                        label: '设置',
-                        onTap: _openSettings,
+                        icon: Icons.more_horiz,
+                        label: '更多',
+                        onTap: _openMore,
                       ),
                     ],
                   ),
@@ -1938,17 +1951,17 @@ class _PanelAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: 9),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 22, color: scheme.onSurfaceVariant),
+              Icon(icon, size: 24, color: scheme.onSurfaceVariant),
               const SizedBox(height: 3),
               Text(
                 label,
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: scheme.onSurfaceVariant,
-                  fontSize: 11,
+                  fontSize: 12,
                   height: 1.1,
                 ),
               ),

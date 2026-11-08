@@ -1805,7 +1805,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 10),
           _ControlButton(
-            icon: Icons.zoom_in,
+            icon: Icons.add_rounded,
             tooltip: '放大',
             onTap: () => _map.move(
               _mapCenter(),
@@ -1814,7 +1814,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 10),
           _ControlButton(
-            icon: Icons.zoom_out,
+            icon: Icons.remove_rounded,
             tooltip: '缩小',
             onTap: () => _map.move(
               _mapCenter(),

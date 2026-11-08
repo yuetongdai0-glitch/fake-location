@@ -61,7 +61,7 @@ class MainActivity : FlutterActivity() {
      * 高德、微信这类应用会用自己的 SDK 做 WiFi 指纹定位，刷新时重新算一遍，
      * 结果盖掉系统里的模拟位置。关掉 WiFi（或关闭“WiFi 扫描”）后它们就只能读系统位置。
      */
-    private fun wifiStatus(): Map<String, Any> {
+    private fun wifiStatus(): Map<String, Any?> {
         var enabled = false
         var ssid: String? = null
         try {

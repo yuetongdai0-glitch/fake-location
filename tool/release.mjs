@@ -154,5 +154,12 @@ try {
   console.log(`更新清单：https://yuetongdai0-glitch.github.io/fake-location-releases/update.json`)
 } finally {
   // 构建失败或中止时也删除本地产物，避免留下可被误传的大 APK。
-  if (!dryRun) await cleanBuildOutput()
+  // 某些环境会拦截批量删除；清理失败不能掩盖真正的发布结果，也不能盖掉原始报错。
+  if (!dryRun) {
+    try {
+      await cleanBuildOutput()
+    } catch (error) {
+      console.warn(`⑦ 清理跳过：${error instanceof Error ? error.message : error}`)
+    }
+  }
 }

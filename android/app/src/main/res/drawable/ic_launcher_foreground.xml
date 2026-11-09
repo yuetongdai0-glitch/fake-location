@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主形落在 adaptive icon 中央安全区，圆形或圆角遮罩下都保留完整定位针。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="1024" android:viewportHeight="1024">
+    <group android:pivotX="512" android:pivotY="512" android:scaleX="0.95" android:scaleY="0.95">
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M512,188C383,188 280,290 280,417C280,576 457,768 496,808Q512,825 528,808C567,768 744,576 744,417C744,290 641,188 512,188Z" />
+    <path android:fillColor="#0F7B6C"
+        android:pathData="M634,418A122,122 0,1 1,390 418A122,122 0,1 1,634 418Z" />
+    <path android:fillColor="#99E8CA"
+        android:pathData="M560,418A48,48 0,1 1,464 418A48,48 0,1 1,560 418Z" />
+    </group>
+</vector>

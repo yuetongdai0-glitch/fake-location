@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>虚拟定位应用标识</title>
+  <rect width="1024" height="1024" rx="224" fill="#0F7B6C"/>
+  <path d="M512 188C383 188 280 290 280 417C280 576 457 768 496 808Q512 825 528 808C567 768 744 576 744 417C744 290 641 188 512 188Z" fill="#FFFFFF"/>
+  <circle cx="512" cy="418" r="122" fill="#0F7B6C"/>
+  <circle cx="512" cy="418" r="48" fill="#99E8CA"/>
+</svg>

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.AppOpsManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.location.Criteria
@@ -15,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import kotlin.math.max
@@ -136,6 +138,7 @@ class MockLocationService : Service() {
             reportFailure = { provider, failure ->
                 Log.w("MockLocationService", "定位源推送失败：$provider", failure)
             },
+            isAuthorized = ::hasMockAuthorization,
         )
     }
 
@@ -216,7 +219,22 @@ class MockLocationService : Service() {
         }
     }
 
-    /** 接管单个定位源；addTestProvider 会覆盖同名源，无需先移除造成短暂真实位置泄漏。 */
+    /** 持续检查模拟授权；失效时保留服务停止入口，并在授权恢复后继续尝试推送。 */
+    private fun hasMockAuthorization(): Boolean = try {
+        val ops = getSystemService(APP_OPS_SERVICE) as AppOpsManager
+        val mode = if (Build.VERSION.SDK_INT >= 29) {
+            ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION, Process.myUid(), packageName)
+        } else {
+            @Suppress("DEPRECATION")
+            ops.checkOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION, Process.myUid(), packageName)
+        }
+        mode == AppOpsManager.MODE_ALLOWED
+    } catch (failure: Exception) {
+        Log.w("MockLocationService", "无法确认模拟位置授权", failure)
+        false
+    }
+
+    /** 接管单个定位源；旧系统已有测试源时由推送器复用，不能先移除造成真实位置泄漏。 */
     private fun addProvider(provider: String) {
         @Suppress("DEPRECATION")
         lm.addTestProvider(

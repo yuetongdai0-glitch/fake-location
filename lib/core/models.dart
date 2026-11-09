@@ -470,6 +470,7 @@ class MockReport {
     this.backgroundRestricted,
     this.powerErrors = const {},
     this.pushedWgs,
+    this.deviceInfo = const {},
   });
 
   final bool serviceRunning;
@@ -497,6 +498,9 @@ class MockReport {
 
   /// 服务实际写入的点，与地图上尚未应用的草稿点区分。
   final LatLng? pushedWgs;
+
+  /// 仅包含排查兼容性需要的机型、系统和应用版本，不含设备唯一标识。
+  final Map<String, Object?> deviceInfo;
 
   /// 至少一个源成功不能代表全部覆盖；未上报预期源时也不能判定完整。
   bool get hasFullCoverage =>

@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LocationFixPolicyTest {
+    @Test fun onlyRecentMockReadbackNearTargetCountsAsConfirmed() {
+        fun matches(age: Long = 100L, mock: Boolean = true, lat: Double = 31.23) =
+            LocationFixPolicy.matchesMockTarget(lat, 121.47, 5f, age, mock, 31.23, 121.47)
+        assertTrue(matches())
+        assertFalse(matches(mock = false))
+        assertFalse(matches(age = -1L))
+        assertFalse(matches(age = 5000L))
+        assertFalse(matches(lat = 29.73))
+        assertFalse(matches(lat = Double.NaN))
+    }
+
     @Test fun futureAndMissingFixTimesDoNotBecomeFresh() {
         assertEquals(-1L, LocationFixPolicy.ageMillis(2_000_000_000L, 0L))
         assertEquals(-1L, LocationFixPolicy.ageMillis(2_000_000_000L, 2_000_000_001L))

@@ -32,7 +32,7 @@ class MockProviderPumpTest {
         val pump = MockProviderPump(listOf("gps", "network"), { provider ->
             if (provider == "network") networkRegistrations++
         }, { provider ->
-            if (provider == "network" && networkFails) error("provider removed")
+            if (provider == "network" && networkFails) throw IllegalArgumentException("provider removed")
         })
 
         assertEquals(2, pump.push(0, 1000).size)
@@ -56,5 +56,74 @@ class MockProviderPumpTest {
         allowed = true
         assertEquals(3, pump.push(1000, 2000).size)
         assertTrue(pump.errors.isEmpty())
+    }
+
+    @Test fun transientPublishFailureRetainsRegisteredProviderOnOldSystems() {
+        val installed = mutableSetOf<String>()
+        var registrationCalls = 0
+        var failNetworkOnce = false
+        val pump = MockProviderPump(listOf("gps", "network"), { provider ->
+            registrationCalls++
+            if (!installed.add(provider)) throw IllegalArgumentException("already installed")
+        }, { provider ->
+            if (provider !in installed) throw IllegalArgumentException("missing")
+            if (provider == "network" && failNetworkOnce) {
+                failNetworkOnce = false
+                throw IllegalStateException("temporary failure")
+            }
+        })
+        assertEquals(listOf("gps", "network"), pump.push(0, 1000))
+        failNetworkOnce = true
+        assertEquals(listOf("gps"), pump.push(100, 1100))
+        assertEquals(1000L, pump.lastPushAt["network"])
+        assertEquals(listOf("gps", "network"), pump.push(1100, 2100))
+        assertEquals(2, registrationCalls)
+        assertTrue(pump.errors.isEmpty())
+    }
+
+    @Test fun existingOldSystemProviderIsReusedOnlyAfterActualPublishSucceeds() {
+        var publishes = 0
+        val pump = MockProviderPump(listOf("gps"), {
+            throw IllegalArgumentException("localized existing provider")
+        }, { publishes++ })
+        assertEquals(listOf("gps"), pump.push(0, 1000))
+        assertEquals(1, publishes)
+        assertEquals(1000L, pump.lastPushAt["gps"])
+        assertEquals(listOf("gps"), pump.push(100, 1100))
+        assertEquals(2, publishes)
+    }
+
+    @Test fun registrationFailureCannotPassByIgnoringFailedFallbackPublish() {
+        val pump = MockProviderPump(listOf("network"), {
+            throw IllegalArgumentException("unsupported")
+        }, { throw IllegalArgumentException("not a test provider") })
+        assertTrue(pump.push(0, 1000).isEmpty())
+        assertTrue(pump.lastPushAt.isEmpty())
+        assertNotNull(pump.errors["network"])
+    }
+
+    @Test fun revokedAuthorizationStopsSilentSuccessAndRecoversWithoutReregistering() {
+        var allowed = true
+        var registrationCalls = 0
+        var publishes = 0
+        val pump = MockProviderPump(
+            listOf("gps", "network", "fused"),
+            { registrationCalls++ },
+            { publishes++ },
+            isAuthorized = { allowed },
+        )
+        assertEquals(3, pump.push(0, 1000).size)
+        allowed = false
+        assertTrue(pump.push(100, 1100).isEmpty())
+        assertEquals(3, publishes)
+        assertTrue(pump.errors.values.all { it.contains("模拟位置授权已失效") })
+        assertTrue(pump.lastPushAt.values.all { it == 1000L })
+        assertTrue(pump.push(500, 1500).isEmpty())
+        allowed = true
+        assertEquals(3, pump.push(600, 1600).size)
+        assertEquals(3, registrationCalls)
+        assertEquals(6, publishes)
+        assertTrue(pump.errors.isEmpty())
+        assertTrue(pump.lastPushAt.values.all { it == 1600L })
     }
 }

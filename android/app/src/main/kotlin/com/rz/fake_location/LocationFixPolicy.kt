@@ -20,4 +20,13 @@ internal object LocationFixPolicy {
         latitude in -90.0..90.0 && longitude in -180.0..180.0 &&
         accuracy.isFinite() && accuracy >= 0f && ageMs in 0..MAX_AGE_MS &&
         (!requireReal || !mock)
+
+    /** 实际读回近期模拟目标才算确认；收到指令或无异常写入不能代替此检查。 */
+    fun matchesMockTarget(
+        latitude: Double, longitude: Double, accuracy: Float, ageMs: Long,
+        mock: Boolean, targetLat: Double, targetLng: Double,
+    ): Boolean = usable(latitude, longitude, accuracy, ageMs, mock, false) &&
+        mock && ageMs < 5000L && targetLat.isFinite() && targetLng.isFinite() &&
+        targetLat in -90.0..90.0 && targetLng in -180.0..180.0 &&
+        RouteEngine.distance(latitude, longitude, targetLat, targetLng) < 50.0
 }

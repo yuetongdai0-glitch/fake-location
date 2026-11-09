@@ -8,6 +8,7 @@ import '../core/app_update.dart';
 import '../core/backup_data.dart';
 import '../core/coord.dart';
 import '../core/models.dart';
+import '../core/mock_diagnostic.dart';
 import '../core/storage.dart';
 import '../core/user_message.dart';
 
@@ -1092,6 +1093,7 @@ class MockCheckSheet extends StatefulWidget {
 
 class _MockCheckSheetState extends State<MockCheckSheet> {
   MockReport? _report;
+  DateTime? _checkedAt;
   bool _loading = true;
   bool _retrying = false;
   String? _error;
@@ -1113,6 +1115,7 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
       if (!mounted) return;
       setState(() {
         _report = report;
+        _checkedAt = DateTime.now();
         _error = report == null ? '未取得服务状态，请重试' : null;
         _loading = false;
       });
@@ -1138,6 +1141,31 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
       }
     } finally {
       if (mounted) setState(() => _retrying = false);
+    }
+  }
+
+  /// 复制当前这次检测快照，不联网，也不导出收藏、历史或搜索密钥。
+  Future<void> _copyReport() async {
+    final report = _report;
+    if (report == null || _loading) return;
+    try {
+      await Clipboard.setData(
+        ClipboardData(
+          text: buildMockDiagnostic(
+            report: report,
+            draftWgs: widget.targetWgs,
+            checkedAt: _checkedAt,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已复制检测结果')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(userMessage(error, fallback: '复制失败，请重试'))),
+      );
     }
   }
 
@@ -1175,6 +1203,14 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
               Text('检测失败：$_error', style: theme.textTheme.bodySmall)
             else if (report != null) ...[
               _verdict(theme, report),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _copyReport,
+                  icon: const Icon(Icons.copy_outlined, size: 18),
+                  label: const Text('复制检测结果'),
+                ),
+              ),
               const SizedBox(height: 12),
               if (report.serviceRunning && report.pushedWgs != null)
                 _row(

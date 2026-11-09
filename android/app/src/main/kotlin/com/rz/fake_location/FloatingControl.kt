@@ -1,13 +1,17 @@
 package com.rz.fake_location
 
 import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -186,17 +190,61 @@ class FloatingControl(private val context: Context) {
     private fun updateText() {
         val status = statusText ?: return
         status.text = when {
-            !MockLocationService.running -> "模拟已停止"
-            RouteEngine.active && RouteEngine.paused -> "路线已暂停"
+            !MockLocationService.serviceActive -> "模拟服务已停止"
+            RouteEngine.active && RouteEngine.paused -> "路线已暂停\n${readbackSummary()}"
             RouteEngine.active -> String.format(
-                "%.1f 米/秒 · %d%%",
+                "%.1f 米/秒 · %d%%\n%s",
                 RouteEngine.speed,
                 (RouteEngine.progress() * 100).toInt(),
+                readbackSummary(),
             )
-            else -> String.format("%.5f, %.5f", MockLocationService.currentLat, MockLocationService.currentLng)
+            else -> String.format("目标 %.5f, %.5f\n%s", MockLocationService.currentLat, MockLocationService.currentLng, readbackSummary())
         }
         toggleText?.text = if (RouteEngine.paused) "继续" else "暂停"
         toggleText?.visibility = if (RouteEngine.active) View.VISIBLE else View.GONE
+    }
+
+    /** 独立读回每个系统源，不能因服务仍活着或某个源成功就宣称全部生效。 */
+    @SuppressLint("MissingPermission")
+    private fun readbackSummary(): String {
+        // 撤销授权和下一次推送之间仍可能有近期模拟缓存，不能继续显示已确认。
+        try {
+            val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = if (Build.VERSION.SDK_INT >= 29) {
+                ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION, Process.myUid(), context.packageName)
+            } else {
+                @Suppress("DEPRECATION")
+                ops.checkOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION, Process.myUid(), context.packageName)
+            }
+            if (mode != AppOpsManager.MODE_ALLOWED) return "模拟位置授权已失效"
+        } catch (_: Exception) {
+            return "模拟位置授权待确认"
+        }
+        val elapsed = SystemClock.elapsedRealtime() - MockLocationService.lastPushElapsedRealtimeMs
+        if (!MockLocationService.running || elapsed !in 0L..4999L) return "定位推送待恢复"
+        val providers = MockLocationService.expectedProviders
+        if (providers.isEmpty()) return "系统定位源待确认"
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val confirmed = providers.count { provider ->
+            try {
+                val fix = manager.getLastKnownLocation(provider) ?: return@count false
+                @Suppress("DEPRECATION")
+                val mock = if (Build.VERSION.SDK_INT >= 31) fix.isMock else fix.isFromMockProvider
+                LocationFixPolicy.matchesMockTarget(
+                    fix.latitude, fix.longitude,
+                    if (fix.hasAccuracy()) fix.accuracy else Float.NaN,
+                    LocationFixPolicy.ageMillis(SystemClock.elapsedRealtimeNanos(), fix.elapsedRealtimeNanos),
+                    mock, MockLocationService.currentLat, MockLocationService.currentLng,
+                )
+            } catch (_: Exception) {
+                false
+            }
+        }
+        return if (confirmed == providers.size && MockLocationService.providerErrors.isEmpty()) {
+            "系统源已读回 $confirmed/${providers.size}"
+        } else {
+            "系统源待确认 $confirmed/${providers.size}"
+        }
     }
 
     private fun dp(value: Int): Int =

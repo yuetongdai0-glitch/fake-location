@@ -304,6 +304,7 @@ class MainActivity : FlutterActivity() {
                             val now = SystemClock.elapsedRealtime()
                             result.success(
                                 mapOf(
+                                    "deviceInfo" to deviceInfo(),
                                     "running" to MockLocationService.running,
                                     "serviceActive" to MockLocationService.serviceActive,
                                     "pushCount" to MockLocationService.pushCount,
@@ -705,6 +706,22 @@ class MainActivity : FlutterActivity() {
             }
         }
         if (requests == 0) finish() else handler.postDelayed({ finish() }, 20_000)
+    }
+
+    /** 排查厂商与系统兼容性所需版本信息，不读取设备唯一标识或账号。 */
+    private fun deviceInfo(): Map<String, Any?> {
+        val version = packageManager.getPackageInfo(packageName, 0)
+        return mapOf(
+            "manufacturer" to Build.MANUFACTURER,
+            "brand" to Build.BRAND,
+            "model" to Build.MODEL,
+            "androidVersion" to Build.VERSION.RELEASE,
+            "sdkInt" to Build.VERSION.SDK_INT,
+            "buildDisplay" to Build.DISPLAY,
+            "buildIncremental" to Build.VERSION.INCREMENTAL,
+            "appVersionName" to version.versionName,
+            "appVersionCode" to versionCodeOf(version),
+        )
     }
 
     /** 是否有任一档定位权限。 */

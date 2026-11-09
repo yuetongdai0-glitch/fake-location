@@ -73,6 +73,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Timer? _healthTimer;
   int _searchSeq = 0;
   int _mockGeneration = 0;
+  int _targetRevision = 0;
 
   /// 虚拟摇杆：开启后按住就能像走路一样实时移动目标点。
   bool _joystickOn = false;
@@ -116,6 +117,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // ---------------------------------------------------------------- 初始化
 
   Future<void> _bootstrap() async {
+    final initialTargetRevision = _targetRevision;
+    final initialMockGeneration = _mockGeneration;
     final storage = await AppStorage.load();
     if (!mounted) return;
     final config = storage.readConfig();
@@ -124,19 +127,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _config = config;
       _favorites = storage.readFavorites();
       _recents = storage.readRecents();
-      if (config.lastTarget != null) _target = config.lastTarget!;
-      _targetName = config.lastName;
-      _targetAddress = config.lastAddress;
+      if (initialTargetRevision == _targetRevision &&
+          initialMockGeneration == _mockGeneration) {
+        if (config.lastTarget != null) _target = config.lastTarget!;
+        _targetName = config.lastName;
+        _targetAddress = config.lastAddress;
+      }
     });
 
     await _refreshRunning();
     try {
       await _mockChannel.invokeMethod('requestPermissions');
     } catch (_) {}
+    final canAdoptInitial =
+        _config.lastTarget == null &&
+        initialTargetRevision == _targetRevision &&
+        initialMockGeneration == _mockGeneration;
     await _locate(
       silent: true,
-      moveMap: _config.lastTarget == null,
-      adopt: _config.lastTarget == null,
+      moveMap: canAdoptInitial,
+      adopt: canAdoptInitial,
     );
     await _loadVersionAndCheckUpdate();
   }
@@ -233,13 +243,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     bool adopt = false,
     bool fresh = false,
   }) async {
-    if (_locating) return;
+    if (!mounted || _locating) return;
+    final requestedTargetRevision = _targetRevision;
+    final requestedMockGeneration = _mockGeneration;
     setState(() => _locating = true);
     try {
       final raw = await _mockChannel.invokeMapMethod<String, dynamic>(
         'getLocation',
         {'fresh': fresh, 'realOnly': fresh},
       );
+      if (!mounted) return;
       if (raw == null) {
         if (!silent) _showLocationHelp();
         return;
@@ -257,7 +270,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _realProvider = raw['provider'] as String?;
         _realIsMock = raw['mock'] == true;
       });
-      if (adopt) {
+      // 定位可能等待二十秒；其间选点或开始模拟后，旧读回只能更新蓝点，不能覆盖目标或镜头。
+      final targetUnchanged =
+          requestedTargetRevision == _targetRevision &&
+          requestedMockGeneration == _mockGeneration;
+      if (adopt && targetUnchanged) {
         _setTarget(
           gcj,
           name: '当前位置',
@@ -265,7 +282,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           resolve: true,
           keepSearchText: true,
         );
-      } else if (moveMap) {
+      } else if (moveMap && targetUnchanged) {
         _moveTo(gcj, 17);
       }
       if (!silent) {
@@ -315,6 +332,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     bool resolve = false,
     bool keepSearchText = false,
   }) {
+    _targetRevision++;
     _cancelSearch();
     setState(() {
       _target = gcj;
@@ -530,6 +548,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ? null
         : LatLng(pushedLat, pushedLng);
     return MockReport(
+      deviceInfo:
+          (status['deviceInfo'] as Map?)?.map(
+            (key, value) => MapEntry('$key', value),
+          ) ??
+          const {},
       pushedWgs: pushed != null && Coord.isValidPoint(pushed) ? pushed : null,
       serviceRunning: (status['serviceActive'] ?? status['running']) == true,
       mockAppSelected: status['mockApp'] == true,
@@ -824,6 +847,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ? step.point
         : Coord.wgsToGcj(step.point);
     setState(() {
+      _targetRevision++;
       _target = nextTarget;
       _targetName ??= '摇杆移动';
     });
@@ -982,6 +1006,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         target: _target,
         onChanged: (p) {
           setState(() {
+            _targetRevision++;
             _target = p;
             _targetName ??= '微调位置';
             _targetAddress = null;

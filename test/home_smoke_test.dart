@@ -41,7 +41,7 @@ void main() {
 
     expect(find.text('开始模拟'), findsOneWidget);
     expect(find.text('未启动'), findsOneWidget);
-    expect(find.text('搜索地点，或输入 29.75,106.58'), findsOneWidget);
+    expect(find.text('搜索地点或坐标'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     // 卸载组件，确保所有计时器被清理

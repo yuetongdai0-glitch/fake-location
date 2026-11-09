@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../core/app_update.dart';
+import '../core/app_update_controller.dart';
+import 'app_update_sheet.dart';
 import '../core/backup_data.dart';
 import '../core/coord.dart';
 import '../core/models.dart';
@@ -470,7 +472,7 @@ class _NudgeSheetState extends State<NudgeSheet> {
             ),
           ),
           Text(
-            '每次点击移动 $_step 米，地图上的绿点会同步更新。',
+            '每次移动 $_step 米',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -516,6 +518,7 @@ class SettingsSheet extends StatefulWidget {
     required this.onInstallUpdate,
     required this.onOpenUrl,
     required this.storage,
+    this.updateController,
   });
 
   final AppConfig config;
@@ -529,6 +532,7 @@ class SettingsSheet extends StatefulWidget {
   final Future<void> Function(AppUpdate) onInstallUpdate;
   final Future<void> Function(String url) onOpenUrl;
   final AppStorage storage;
+  final AppUpdateController? updateController;
 
   @override
   State<SettingsSheet> createState() => _SettingsSheetState();
@@ -541,14 +545,17 @@ class _SettingsSheetState extends State<SettingsSheet> {
   late AppConfig _config = widget.config.copy();
   bool _importing = false;
 
-  Future<void> _apply() async {
+  /// 保存失败先恢复表单，再向调用入口返回结果，避免成功提示覆盖错误。
+  Future<bool> _apply() async {
     try {
       await widget.onConfigChanged(_config);
+      return true;
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _config = widget.config.copy());
       _keyController.text = _config.amapKey;
       _toast(userMessage(error, fallback: '设置保存失败，请重试'));
+      return false;
     }
   }
 
@@ -635,7 +642,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
         },
       };
       await Clipboard.setData(ClipboardData(text: jsonEncode(data)));
-      _toast('已复制到剪贴板，粘贴到记事本保存即可');
+      _toast('备份已复制');
     } catch (error) {
       _toast(userMessage(error, fallback: '导出失败，无法写入剪贴板'));
     }
@@ -648,7 +655,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
     try {
       final raw = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
       if (raw == null || raw.trim().isEmpty) {
-        _toast('剪贴板里没有内容');
+        _toast('剪贴板为空');
         return;
       }
       final backup = BackupData.parse(raw, baseline: _config);
@@ -700,6 +707,44 @@ class _SettingsSheetState extends State<SettingsSheet> {
     super.dispose();
   }
 
+  /// 设置和独立面板共享更新状态，弹层不再缓存一份过期版本结论。
+  Widget _buildUpdateEntry(AppUpdateController controller) {
+    final state = controller.state;
+    final status = switch (state.phase) {
+      AppUpdatePhase.idle => '尚未检查',
+      AppUpdatePhase.checking => '检查中…',
+      AppUpdatePhase.current => '已是最新版',
+      AppUpdatePhase.available => '新版本 ${state.availableVersionName}',
+      AppUpdatePhase.downloading =>
+        state.progress < 0 ? '下载中…' : '下载中 ${state.progress}%',
+      AppUpdatePhase.verifying => '校验中…',
+      AppUpdatePhase.ready => '已下载，点击安装',
+      AppUpdatePhase.permission => '等待安装授权',
+      AppUpdatePhase.installing => '安装器已打开',
+      AppUpdatePhase.cancelled => '下载已取消',
+      AppUpdatePhase.error => state.error,
+    };
+    return ListTile(
+      key: const ValueKey('settings-app-update'),
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.system_update_alt),
+      title: Text(
+        state.installedVersionName.isEmpty
+            ? '应用更新'
+            : '虚拟定位 ${state.installedVersionName}',
+      ),
+      subtitle: Text(status),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        showDragHandle: true,
+        builder: (_) => AppUpdateSheet(controller: controller),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -734,10 +779,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('显示签到范围圈'),
-            subtitle: Text(
-              '以目标点为圆心画 ${_config.radiusMeters.round()} 米圆，便于判断是否在范围内',
-            ),
+            title: const Text('显示范围圈'),
+            subtitle: Text('半径 ${_config.radiusMeters.round()} 米'),
             value: _config.showRadius,
             onChanged: (v) {
               setState(() => _config.showRadius = v);
@@ -777,7 +820,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
-              '这里只影响界面显示；写入系统的坐标由下面的选项决定。',
+              '仅改变显示格式',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -801,7 +844,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
-              '模拟后在其它应用里若看到约 500 米偏移，切换为 GCJ-02 再试。',
+              '通常使用 WGS-84',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -839,15 +882,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 )
                 .toList(),
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4, bottom: 10),
-            child: Text(
-              '微信、运动类应用建议 100~200 毫秒，普通场景 500 即可；越小越费电。',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(child: Text('模拟精度', style: theme.textTheme.bodyMedium)),
@@ -875,19 +910,11 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 )
                 .toList(),
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              '精度越小，其它应用越相信这是卫星定位；设得太大时会退化成“大致位置”。',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
+
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('悬浮控制条'),
-            subtitle: const Text('在其它应用上显示模拟状态，可直接暂停或回到真实位置'),
+            subtitle: const Text('跨应用暂停或停止'),
             value: _config.floatBar,
             onChanged: (v) {
               setState(() => _config.floatBar = v);
@@ -911,7 +938,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           TextField(
             controller: _keyController,
             decoration: const InputDecoration(
-              hintText: '粘贴高德网络服务密钥（可选）',
+              hintText: '高德网络服务密钥',
               border: OutlineInputBorder(),
               isDense: true,
             ),
@@ -920,8 +947,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           ),
           const SizedBox(height: 8),
           Text(
-            '填写后搜索将直接使用高德数据（地点更全、坐标与高德地图完全一致），'
-            '并支持高德逆地理。留空时自动使用百度地图网页数据，再由开放地图兜底。',
+            '选填，用于高德地点搜索',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -939,11 +965,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
               const Spacer(),
               FilledButton(
                 onPressed: () async {
-                  await _apply();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(const SnackBar(content: Text('设置已保存')));
-                  }
+                  final saved = await _apply();
+                  if (saved && mounted) _toast('已保存');
                 },
                 child: const Text('保存'),
               ),
@@ -952,14 +975,15 @@ class _SettingsSheetState extends State<SettingsSheet> {
           const Divider(height: 28),
           Text('数据备份', style: theme.textTheme.labelLarge),
           const SizedBox(height: 4),
-          Row(
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            spacing: 12,
             children: [
               TextButton.icon(
                 onPressed: _importing ? null : _exportData,
                 icon: const Icon(Icons.upload_file_outlined, size: 16),
                 label: const Text('导出到剪贴板'),
               ),
-              const Spacer(),
               TextButton.icon(
                 onPressed: _importing ? null : _importData,
                 icon: const Icon(Icons.download_outlined, size: 16),
@@ -968,102 +992,68 @@ class _SettingsSheetState extends State<SettingsSheet> {
             ],
           ),
           Text(
-            '包含常用地点、保存的路线和全部设置；换机时导出这段文本，在新手机上导入即可恢复。',
+            '备份地点、路线和设置',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const Divider(height: 28),
-          Text('需要系统提权的功能', style: theme.textTheme.labelLarge),
-          const SizedBox(height: 6),
-          Text(
-            '无线网络 模拟、基站模拟、独立模拟（只对某个应用生效）、反检测和 系统提权隐藏，'
-            '都需要系统级权限（系统提权或系统扩展框架）才能实现。本应用走免系统提权方案，'
-            '这些开关即使做出来也不会真正生效，所以没有提供。',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.6,
             ),
           ),
           const Divider(height: 28),
           Text('关于', style: theme.textTheme.labelLarge),
           const SizedBox(height: 8),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.info_outline),
-            title: Text(
-              widget.versionName.isEmpty
-                  ? '虚拟定位'
-                  : '虚拟定位 ${widget.versionName}',
+          if (widget.updateController != null)
+            ListenableBuilder(
+              listenable: widget.updateController!,
+              builder: (context, _) =>
+                  _buildUpdateEntry(widget.updateController!),
+            )
+          else ...[
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.info_outline),
+              title: Text(
+                widget.versionName.isEmpty
+                    ? '虚拟定位'
+                    : '虚拟定位 ${widget.versionName}',
+              ),
+              subtitle: Text(
+                _busy
+                    ? '正在下载安装包…'
+                    : _checking
+                    ? '正在检查…'
+                    : _available != null
+                    ? '发现新版本 ${_available!.versionName}'
+                    : _checked
+                    ? '已是最新版本'
+                    : '尚未检查更新',
+              ),
+              trailing: _checking || _busy
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : TextButton(
+                      onPressed: () {
+                        if (_available != null) {
+                          _install(_available!);
+                        } else {
+                          _checkUpdate();
+                        }
+                      },
+                      child: Text(_available == null ? '检查更新' : '立即更新'),
+                    ),
             ),
-            subtitle: Text(
-              _busy
-                  ? '正在下载安装包…'
-                  : _checking
-                  ? '正在检查…'
-                  : _available != null
-                  ? '发现新版本 ${_available!.versionName}'
-                  : _checked
-                  ? '已是最新版本'
-                  : '尚未检查更新',
-            ),
-            trailing: _checking || _busy
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : TextButton(
-                    onPressed: () {
-                      if (_available != null) {
-                        _install(_available!);
-                      } else {
-                        _checkUpdate();
-                      }
-                    },
-                    child: Text(_available == null ? '检查更新' : '立即更新'),
+            if (_updateError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, left: 40),
+                child: Text(
+                  '更新失败：$_updateError',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFD93025),
                   ),
-          ),
-          if (_updateError != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4, left: 40),
-              child: Text(
-                '更新失败：$_updateError',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFFD93025),
                 ),
               ),
-            ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('使用提示', style: theme.textTheme.labelLarge),
-                const SizedBox(height: 6),
-                Text(
-                  '· 需要在开发者选项里把“选择模拟位置信息应用”设为“虚拟定位”。\n'
-                  '· 微信等应用会缓存定位，修改目标后建议退出并重新进入对应页面。\n'
-                  '· 室内信号差时定位精度可能只有几十米，可在微调面板手动校正。',
-                  style: theme.textTheme.bodySmall?.copyWith(height: 1.6),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Center(
-            child: Text(
-              '坐标转换：WGS-84 ↔ GCJ-02 ↔ BD-09',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.outline,
-              ),
-            ),
-          ),
+          ],
         ],
       ),
     );
@@ -1379,58 +1369,13 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
                   label: const Text('打开微信'),
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Text(
-                '逐个定位源显示近期模拟坐标且偏差在 50 米内，才表示系统位置校验通过。\n'
-                '微信、高德可能结合无线网络、基站或自己的缓存计算位置；系统校验通过不等于每个应用都会采用。\n'
-                '若目标应用仍显示原位，可先点击其定位按钮刷新、检查精确位置权限，'
-                '再分别关闭无线网络与系统“无线网络扫描”对比。免系统提权方案无法改写热点或基站数据。',
+                report.matchesTarget(target)
+                    ? '系统读回通过，目标应用仍可能使用独立定位。'
+                    : '目标应用可能使用独立定位。',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
-                  height: 1.6,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8710A).withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: const Color(0xFFE8710A).withValues(alpha: 0.24),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.shield_outlined,
-                          size: 16,
-                          color: Color(0xFFE8710A),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          '应用兼容性说明',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: const Color(0xFFE8710A),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '系统会为模拟位置添加标记，具有定位权限的应用可以识别。'
-                      '不同应用可能使用各自的定位和风险判断方式，无法保证都会采用模拟位置。'
-                      '免系统提权方案不能去除系统模拟标记。',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        height: 1.6,
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ],
@@ -1455,37 +1400,37 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
       color = const Color(0xFFD93025);
       icon = Icons.error_outline;
       title = '未设为模拟位置应用';
-      detail = '开发者选项 →“选择模拟位置信息应用”→ 选择“虚拟定位”，再点开始模拟。';
+      detail = '在开发者选项中选择“虚拟定位”。';
     } else if (!report.isPushing) {
       color = const Color(0xFFD93025);
       icon = Icons.error_outline;
       title = '模拟服务没有在推送';
-      detail = '可能被系统清理了，点下面“重新推送”，并在电池设置里允许后台运行。';
+      detail = '点击重新推送，检查后台权限。';
     } else if (!report.hasFullCoverage) {
       color = const Color(0xFFE8710A);
       icon = Icons.warning_amber_rounded;
       title = '部分定位源尚未接管';
-      detail = '不同应用可能使用不同定位源，请检查下方失败原因；服务会自动重试恢复。';
+      detail = '查看下方失败原因，服务正在重试。';
     } else if (!report.isEffective) {
       color = const Color(0xFFE8710A);
       icon = Icons.warning_amber_rounded;
       title = '部分定位源尚未确认';
-      detail = '有定位源未读回近期模拟坐标，请重新检测并查看逐源结果。';
+      detail = '请重新检测并查看逐源结果。';
     } else if (!report.systemIsMock) {
       color = const Color(0xFFE8710A);
       icon = Icons.warning_amber_rounded;
       title = '系统仍返回真实定位';
-      detail = '测试源可能被 系统固件拦截；请确认开发者选项里的模拟位置应用，并尝试重启手机后再开始。';
+      detail = '检查模拟位置授权后重新推送。';
     } else if (!report.matchesTarget(_checkedTarget(report))) {
       color = const Color(0xFFE8710A);
       icon = Icons.warning_amber_rounded;
       title = '系统位置与目标不一致';
-      detail = '至少一个定位源与目标偏差超过 50 米，请点“重新推送”再检测。';
+      detail = '至少一源偏差超过 50 米，请重新推送。';
     } else {
       color = const Color(0xFF17B978);
       icon = Icons.check_circle_outline;
       title = '系统定位源校验通过';
-      detail = '各系统源均返回目标附近的模拟坐标；目标应用使用独立定位时，请按下方方法对比。';
+      detail = '各系统源已读回目标附近的模拟坐标。';
     }
 
     return Container(

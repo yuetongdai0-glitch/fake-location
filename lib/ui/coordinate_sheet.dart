@@ -73,7 +73,8 @@ class _CoordinateSheetState extends State<CoordinateSheet> {
     final combined = (lngText.isEmpty || latText.contains(RegExp(r'[,;°]')))
         ? (lngText.isEmpty ? latText : '$latText,$lngText')
         : '$latText,$lngText';
-    final withSystem = '${_system.name == 'bd09' ? 'bd' : _system.name}: $combined';
+    final withSystem =
+        '${_system.name == 'bd09' ? 'bd' : _system.name}: $combined';
     final reading = CoordinateInput.parse(withSystem);
     setState(() {
       _reading = reading;
@@ -159,9 +160,7 @@ class _CoordinateSheetState extends State<CoordinateSheet> {
             ],
           ),
           Text(
-            '搜不到的地方直接填经纬度。支持十进制（39.908722, 116.397499）、'
-            '度分秒（39°54′31″N 116°23′51″E）、geo: 链接，'
-            '也可以用 wgs / gcj / bd 前缀指定坐标系。',
+            '支持经纬度、度分秒和地图链接',
             style: theme.textTheme.bodySmall?.copyWith(
               color: scheme.onSurfaceVariant,
               height: 1.5,
@@ -265,14 +264,20 @@ class _CoordinateSheetState extends State<CoordinateSheet> {
               decoration: BoxDecoration(
                 color: scheme.primary.withValues(alpha: 0.06),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: scheme.primary.withValues(alpha: 0.2)),
+                border: Border.all(
+                  color: scheme.primary.withValues(alpha: 0.2),
+                ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.check_circle_outline, size: 16, color: scheme.primary),
+                      Icon(
+                        Icons.check_circle_outline,
+                        size: 16,
+                        color: scheme.primary,
+                      ),
                       const SizedBox(width: 6),
                       Text(
                         '已识别（按 ${reading.sourceLabel} 解释）',

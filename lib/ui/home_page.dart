@@ -6,7 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
-import '../core/app_update.dart';
+import '../core/app_update_controller.dart';
+import 'app_update_sheet.dart';
 import '../core/coord.dart';
 import '../core/coordinate_input.dart';
 import '../core/models.dart';
@@ -60,12 +61,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   List<SavedPlace> _favorites = const [];
   List<SavedPlace> _recents = const [];
 
-  int _installedVersionCode = 0;
-  String _installedVersionName = '';
-  AppUpdate? _availableUpdate;
-  bool _checkingUpdate = false;
-  bool _updateBusy = false;
-  bool _updateChecked = false;
+  late final AppUpdateController _updater;
+  String _drawerVersion = '';
+  bool _drawerHasUpdate = false;
+  String get _installedVersionName => _updater.state.installedVersionName;
+  String get _versionLabel => _installedVersionName.isNotEmpty
+      ? '版本 $_installedVersionName'
+      : _updater.state.phase == AppUpdatePhase.error
+      ? '版本未知'
+      : '读取版本中';
 
   Timer? _persistTimer;
   Timer? _resolveTimer;
@@ -87,6 +91,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _updater = AppUpdateController(channel: _updateChannel)
+      ..addListener(_onUpdateChanged);
+    // 检查更新不等待定位、权限弹窗或地图请求。
+    unawaited(_initializeUpdates());
     _bootstrap();
   }
 
@@ -99,6 +107,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _healthTimer?.cancel();
     _stickTimer?.cancel();
     _stickClock.stop();
+    _updater
+      ..removeListener(_onUpdateChanged)
+      ..dispose();
     _searchCtrl.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -108,6 +119,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshRunning();
+      unawaited(_updater.syncNativeStatus());
     } else if (_stick != Offset.zero) {
       // 失去前台时可能收不到松手事件，不能继续在后台按最后方向移动。
       _onStick(Offset.zero);
@@ -148,7 +160,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       moveMap: canAdoptInitial,
       adopt: canAdoptInitial,
     );
-    await _loadVersionAndCheckUpdate();
   }
 
   Future<void> _refreshRunning() async {
@@ -162,78 +173,34 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  Future<void> _loadVersionAndCheckUpdate() async {
-    try {
-      final version = await _updateChannel.invokeMapMethod<String, dynamic>(
-        'version',
-      );
-      if (version != null && mounted) {
-        setState(() {
-          _installedVersionCode = version['versionCode'] as int? ?? 0;
-          _installedVersionName = version['versionName'] as String? ?? '';
-        });
-      }
-    } catch (_) {
-      // 版本读取失败时仍保留手动检查入口。
-    }
-    try {
-      await _checkUpdate(manual: false);
-    } catch (_) {
-      // 自动检查失败不打扰用户，手动检查会就地显示原因。
-    }
+  void _onUpdateChanged() {
+    final version = _versionLabel;
+    final available = _updater.hasUpdate;
+    // 字节进度由更新面板自行监听，避免后台下载反复重建地图。
+    if (_drawerVersion == version && _drawerHasUpdate == available) return;
+    _drawerVersion = version;
+    _drawerHasUpdate = available;
+    if (mounted) setState(() {});
   }
 
-  Future<AppUpdate?> _checkUpdate({required bool manual}) async {
-    if (_checkingUpdate || _updateBusy) return null;
-    setState(() => _checkingUpdate = true);
-    try {
-      final latest = await fetchLatestUpdate();
-      final available =
-          _installedVersionCode > 0 && latest.isNewerThan(_installedVersionCode)
-          ? latest
-          : null;
-      if (!mounted) return available;
-      final fresh = available != null && _availableUpdate == null;
-      setState(() {
-        _availableUpdate = available;
-        _updateChecked = true;
-      });
-      // 手动检查由设置面板自己就地展示结果，这里只在自动检查时提示
-      if (!manual && fresh) {
-        _toastWithAction(
-          '发现新版本 ${latest.versionName}',
-          '更新',
-          () => _installUpdate(latest),
-        );
-      }
-      return available;
-    } finally {
-      if (mounted) setState(() => _checkingUpdate = false);
-    }
+  Future<void> _initializeUpdates() async {
+    await _updater.initialize();
+    if (!mounted || _updater.state.phase != AppUpdatePhase.available) return;
+    _toastWithAction(
+      '发现新版本 ${_updater.state.availableVersionName}',
+      '查看',
+      _openUpdateSheet,
+    );
   }
 
-  Future<void> _installUpdate(AppUpdate update) async {
-    if (_updateBusy) return;
-    setState(() {
-      _updateBusy = true;
-      _checkingUpdate = false;
-    });
-    try {
-      await _updateChannel.invokeMethod<bool>('downloadAndInstall', {
-        'packageId': update.appId,
-        'versionName': update.versionName,
-        'versionCode': update.versionCode,
-        'apkUrl': update.apkUrl.toString(),
-        'sha256': update.sha256,
-        'minSdk': update.minSdk,
-      });
-      if (mounted) _toast('安装包已下载，请在系统安装器中完成更新');
-    } on PlatformException catch (e) {
-      if (mounted) _toast(userMessage(e, fallback: '下载安装失败，请重试'));
-    } finally {
-      if (mounted) setState(() => _updateBusy = false);
-    }
-  }
+  /// 面板关闭后下载仍由同一个控制器持有，重开可继续查看进度和安装。
+  Future<void> _openUpdateSheet() => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    builder: (_) => AppUpdateSheet(controller: _updater),
+  );
 
   // ---------------------------------------------------------------- 定位
 
@@ -725,8 +692,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       unawaited(_verifyAfterStart(write, generation));
       _startHealthCheck();
       _toast(
-        '已开始模拟：${_config.writeGcj ? 'GCJ-02' : 'WGS-84'} '
-        '${formatLatLng(write, digits: 6)}'
+        '已开始模拟'
         '${recentWarning == null ? '' : '；$recentWarning'}',
       );
     } on PlatformException catch (e) {
@@ -1051,10 +1017,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       builder: (_) => SettingsSheet(
         config: _config,
         versionName: _installedVersionName,
-        availableUpdate: _availableUpdate,
-        updateChecked: _updateChecked,
-        checkingUpdate: _checkingUpdate,
-        updateBusy: _updateBusy,
+        updateController: _updater,
+        availableUpdate: _updater.hasUpdate ? _updater.state.update : null,
+        updateChecked:
+            _updater.state.phase == AppUpdatePhase.current ||
+            _updater.hasUpdate,
+        checkingUpdate: _updater.state.phase == AppUpdatePhase.checking,
+        updateBusy: _updater.busy,
         onConfigChanged: (config) async {
           final wantedFloat = config.floatBar;
           await _storage?.writeConfig(config);
@@ -1062,8 +1031,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           setState(() => _config = config);
           await _syncFloatBar(wantedFloat);
         },
-        onCheckUpdate: () => _checkUpdate(manual: true),
-        onInstallUpdate: _installUpdate,
+        onCheckUpdate: () => _updater.check(manual: true),
+        onInstallUpdate: (_) => _updater.download(),
         onOpenUrl: _openUrl,
         storage: _storage!,
       ),
@@ -1148,11 +1117,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     context: context,
     builder: (c) => AlertDialog(
       title: const Text('需要开启模拟位置'),
-      content: const Text(
-        '1. 设置 → 关于手机 → 连续点击“版本号”7 次开启开发者选项\n'
-        '2. 开发者选项 → “选择模拟位置信息应用” → 选择“虚拟定位”\n'
-        '3. 返回本应用点击开始',
-      ),
+      content: const Text('在开发者选项中，将模拟位置应用设为“虚拟定位”。'),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
         FilledButton(
@@ -1170,12 +1135,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     context: context,
     builder: (c) => AlertDialog(
       title: const Text('定位不可用'),
-      content: const Text(
-        '请确认：\n'
-        '· 已授予定位权限\n'
-        '· 手机的“位置信息”开关已打开\n'
-        '· 在室内时可到窗边重试，或手动搜索地点',
-      ),
+      content: const Text('请开启系统定位并授予定位权限。'),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c), child: const Text('知道了')),
         TextButton(
@@ -1184,7 +1144,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             await _mockChannel.invokeMethod('requestPermissions');
             await _locate(moveMap: true, adopt: !_running);
           },
-          child: const Text('重新授权并定位'),
+          child: const Text('重新定位'),
         ),
         FilledButton(
           onPressed: () {
@@ -1286,9 +1246,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      _installedVersionName.isEmpty
-                          ? '免系统提权位置模拟'
-                          : '版本 $_installedVersionName · 免系统提权',
+                      _versionLabel,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 11.5,
@@ -1355,28 +1313,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
             ),
             Divider(height: 1, color: scheme.outlineVariant),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.shield_outlined,
-                    size: 14,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      '免系统提权方案 · 仅用于开发调试与学习',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+            _drawerItem(
+              theme,
+              Icons.system_update_alt,
+              _updater.hasUpdate ? '应用更新 · 有新版' : '应用更新',
+              onTap: _openUpdateSheet,
             ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -1632,7 +1575,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 onSubmitted: (_) => _search(),
                 onChanged: _onQueryChanged,
                 decoration: const InputDecoration(
-                  hintText: '搜索地点，或输入 29.75,106.58',
+                  hintText: '搜索地点或坐标',
                   hintMaxLines: 1,
                   isDense: true,
                   border: InputBorder.none,

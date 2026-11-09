@@ -16,14 +16,14 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import kotlin.math.max
-import kotlin.random.Random
 
 /**
  * 前台服务：注册测试定位源，按设定的频率推送模拟坐标（WGS-84）。
  *
  * 两种工作方式：
- * 1. 定点模拟：坐标固定，只做小幅抖动；
+ * 1. 定点模拟：稳定保持指定坐标；
  * 2. 路线模拟：交给 [RouteEngine] 沿折线按速度移动，每 tick 取一次新坐标。
  *
  * 必须持续推送，否则系统/应用会认为定位过期并回落到真实位置。
@@ -36,6 +36,8 @@ class MockLocationService : Service() {
         const val ACTION_STOP_ROUTE = "com.rz.fake_location.STOP_ROUTE"
         const val ACTION_SPEED = "com.rz.fake_location.SPEED"
 
+        /** 服务存活与推送健康分开：短暂源故障期间服务仍会自动恢复。 */
+        @Volatile var serviceActive = false
         @Volatile var running = false
 
         /** 已成功推送次数，用于判断服务是否真的在工作。 */
@@ -43,6 +45,9 @@ class MockLocationService : Service() {
 
         /** 最后一次成功推送的时间戳（毫秒）。 */
         @Volatile var lastPushAt = 0L
+
+        /** 单调时钟下的推送时间，设备校时不能导致诊断误判为过期。 */
+        @Volatile var lastPushElapsedRealtimeMs = 0L
 
         /** 当前模拟坐标（WGS-84）。 */
         @Volatile var currentLat = 0.0
@@ -58,17 +63,28 @@ class MockLocationService : Service() {
         val activeProviders: MutableList<String> =
             java.util.Collections.synchronizedList(mutableListOf())
 
+        /** 预期覆盖与每源失败、推送时间独立上报，避免把部分生效误报为全局生效。 */
+        @Volatile var expectedProviders: List<String> = emptyList()
+        @Volatile var providerErrors: Map<String, String> = emptyMap()
+        @Volatile var providerLastPushAt: Map<String, Long> = emptyMap()
+
         private const val CHANNEL_ID = "mock_location"
         private const val NOTIFY_ID = 1001
     }
 
     private lateinit var lm: LocationManager
+    private lateinit var providerPump: MockProviderPump
     private val handler = Handler(Looper.getMainLooper())
     private var lat = 0.0
     private var lng = 0.0
+    private var hasPosition = false
     private var lastTickAt = 0L
     private var notificationText = ""
     private var notificationAt = 0L
+    private var currentBearing = 0f
+    private var batchTimeMs = 0L
+    private var batchElapsedRealtimeNanos = 0L
+    private val manualMotion = ManualMotionState()
 
     private val tick = object : Runnable {
         override fun run() {
@@ -77,12 +93,12 @@ class MockLocationService : Service() {
             lastTickAt = now
             if (RouteEngine.active) {
                 RouteEngine.tick(dt)
-                if (RouteEngine.active || RouteEngine.speed > 0) {
-                    lat = RouteEngine.latitude
-                    lng = RouteEngine.longitude
-                    currentLat = lat
-                    currentLng = lng
-                }
+                // tick 可能刚好完成单程，仍要投递本次到达的终点。
+                lat = RouteEngine.latitude
+                lng = RouteEngine.longitude
+                currentLat = lat
+                currentLng = lng
+                currentBearing = RouteEngine.bearing
             }
             pushLocation()
             updateNotificationIfNeeded()
@@ -94,14 +110,44 @@ class MockLocationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        serviceActive = true
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        expectedProviders = buildList {
+            add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+            // fused 名称早于公开常量存在；旧 ROM 只要实际提供就一并覆盖。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S || "fused" in lm.allProviders) {
+                add("fused")
+            }
+        }
+        providerErrors = emptyMap()
+        providerLastPushAt = emptyMap()
+        pushCount = 0L
+        lastPushAt = 0L
+        lastPushElapsedRealtimeMs = 0L
+        providerPump = MockProviderPump(
+            expectedProviders,
+            ::addProvider,
+            publish = { provider ->
+                // 部分 ROM 切换定位客户端/网络后会关闭测试源；不必移除源或打断其它订阅者。
+                lm.setTestProviderEnabled(provider, true)
+                lm.setTestProviderLocation(provider, buildLocation(provider))
+            },
+            reportFailure = { provider, failure ->
+                Log.w("MockLocationService", "定位源推送失败：$provider", failure)
+            },
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.let { handleIntent(it) }
+        // 进程重建后单独重投递的暂停/调速指令不含坐标，不能伪装成仍在模拟。
+        if (!hasPosition) {
+            running = false
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         startAsForeground()
-        if (activeProviders.isEmpty()) setupProviders()
-        running = true
         // 改坐标时立刻推一次，避免用户等待
         pushLocation()
         handler.removeCallbacks(tick)
@@ -115,7 +161,10 @@ class MockLocationService : Service() {
         when (intent.action) {
             ACTION_PAUSE -> RouteEngine.pause()
             ACTION_RESUME -> RouteEngine.resume()
-            ACTION_STOP_ROUTE -> RouteEngine.stop()
+            ACTION_STOP_ROUTE -> {
+                RouteEngine.stop()
+                manualMotion.reset()
+            }
             ACTION_SPEED -> {
                 val value = intent.getDoubleExtra("speed", RouteEngine.speed)
                 RouteEngine.setSpeed(value)
@@ -142,10 +191,13 @@ class MockLocationService : Service() {
             val speed = intent.getDoubleExtra("speed", 1.4)
             val mode = intent.getStringExtra("mode") ?: RouteEngine.MODE_LOOP
             if (RouteEngine.start(pts, speed, mode)) {
+                manualMotion.reset()
                 lat = RouteEngine.latitude
                 lng = RouteEngine.longitude
                 currentLat = lat
                 currentLng = lng
+                hasPosition = true
+                currentBearing = RouteEngine.bearing
                 lastTickAt = SystemClock.elapsedRealtime()
             }
         } else if (intent.hasExtra("lat") && intent.hasExtra("lng")) {
@@ -154,91 +206,71 @@ class MockLocationService : Service() {
             lng = intent.getDoubleExtra("lng", lng)
             currentLat = lat
             currentLng = lng
+            hasPosition = true
+            val speed = intent.getDoubleExtra("manualSpeed", 0.0)
+            val bearing = intent.getDoubleExtra("manualBearing", 0.0)
+            if (!manualMotion.update(speed, bearing, SystemClock.elapsedRealtime())) {
+                manualMotion.reset()
+            }
+            currentBearing = manualMotion.bearing
         }
     }
 
-    /** 注册 GPS / 网络 / 融合定位三个测试源，覆盖大多数应用读取位置的方式。 */
-    private fun setupProviders() {
-        val names = mutableListOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER,
+    /** 接管单个定位源；addTestProvider 会覆盖同名源，无需先移除造成短暂真实位置泄漏。 */
+    private fun addProvider(provider: String) {
+        @Suppress("DEPRECATION")
+        lm.addTestProvider(
+            provider, provider == LocationManager.NETWORK_PROVIDER,
+            provider == LocationManager.GPS_PROVIDER, false, false, true, true, true,
+            if (provider == LocationManager.GPS_PROVIDER) Criteria.POWER_HIGH else Criteria.POWER_LOW,
+            Criteria.ACCURACY_FINE,
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            names.add(LocationManager.FUSED_PROVIDER)
-        }
-        for (provider in names) {
-            if (addProvider(provider)) activeProviders.add(provider)
-        }
     }
 
-    /** 尝试接管单个 provider，失败返回 false（部分 ROM 不允许覆盖）。 */
-    private fun addProvider(provider: String): Boolean {
-        return try {
-            try {
-                lm.removeTestProvider(provider)
-            } catch (_: Exception) {
-            }
-            @Suppress("DEPRECATION")
-            lm.addTestProvider(
-                provider, false, false, false, false, true, true, true,
-                Criteria.POWER_LOW, Criteria.ACCURACY_FINE,
-            )
-            lm.setTestProviderEnabled(provider, true)
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
+    /** 每轮遍历全部预期源，包括启动时未接管成功以及后来被系统回收的源。 */
     private fun pushLocation() {
-        if (lat == 0.0 && lng == 0.0) return
-        var success = 0
-        // 个别 ROM 会在其它应用请求定位时把测试源挤掉，失败时重新接管
-        val snapshot = synchronized(activeProviders) { activeProviders.toList() }
-        for (provider in snapshot) {
-            val location = buildLocation(provider)
-            try {
-                lm.setTestProviderLocation(provider, location)
-                success++
-            } catch (_: Exception) {
-                try {
-                    if (addProvider(provider)) {
-                        lm.setTestProviderLocation(provider, location)
-                        success++
-                    }
-                } catch (_: Exception) {
-                }
-            }
+        if (!hasPosition) {
+            running = false
+            return
         }
-        if (success > 0) {
+        // 一轮使用同一坐标、精度和采样时刻，防止应用切换定位源时产生假位移。
+        batchTimeMs = System.currentTimeMillis()
+        batchElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        val successful = providerPump.push(SystemClock.elapsedRealtime(), batchTimeMs)
+        synchronized(activeProviders) {
+            activeProviders.clear()
+            activeProviders.addAll(successful)
+        }
+        providerErrors = providerPump.errors.toMap()
+        providerLastPushAt = providerPump.lastPushAt.toMap()
+        if (successful.isNotEmpty()) {
             pushCount++
-            lastPushAt = System.currentTimeMillis()
+            lastPushAt = batchTimeMs
+            lastPushElapsedRealtimeMs = SystemClock.elapsedRealtime()
             running = true
         } else {
-            // 一个都没成功，说明已失去测试源权限
+            // 服务仍会继续重试；是否全源生效由逐源读回结果判断。
             running = false
         }
     }
 
     private fun buildLocation(provider: String): Location {
-        // 静止时抖动约 ±0.3 米；移动时抖动更小，看起来更顺滑
-        val moving = RouteEngine.active && !RouteEngine.paused
-        val jitter = if (moving) 0.000002 else 0.000006
-        val baseAccuracy = accuracyMeters.toFloat()
-        val accuracy = max(1f, baseAccuracy + (Random.nextFloat() - 0.5f) * 1.5f)
-        val speed = if (moving) RouteEngine.speed.toFloat() else 0f
-        val bearing = if (RouteEngine.active) RouteEngine.bearing else 0f
-        // 步频模拟：按步幅折算累计步数
-        val steps = if (RouteEngine.active) (RouteEngine.travelled / stepLength()).toInt() else 0
+        val speed = if (RouteEngine.active) {
+            if (RouteEngine.paused) 0f else RouteEngine.speed.toFloat()
+        } else manualMotion.speedAt(batchElapsedRealtimeNanos / 1_000_000L).toFloat()
+        val moving = speed > 0f
+        val accuracy = max(1f, accuracyMeters.toFloat())
+        // 路线结束后保留已走步数；普通定点指令会清除路线计数。
+        val steps = (RouteEngine.travelled / stepLength()).toInt()
         return Location(provider).apply {
-            latitude = lat + (Random.nextDouble() - 0.5) * jitter
-            longitude = lng + (Random.nextDouble() - 0.5) * jitter
+            latitude = lat
+            longitude = lng
             altitude = 50.0
             this.accuracy = accuracy
             this.speed = speed
-            this.bearing = bearing
-            time = System.currentTimeMillis()
-            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            this.bearing = currentBearing
+            time = batchTimeMs
+            elapsedRealtimeNanos = batchElapsedRealtimeNanos
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 verticalAccuracyMeters = accuracy
                 speedAccuracyMetersPerSecond = if (moving) 0.2f else 0.1f
@@ -248,10 +280,10 @@ class MockLocationService : Service() {
             // 注意：不要在这里写 mock/模拟 之类的字段——mock 标记由系统在投递时打上，
             // 应用自己再写一遍只会让风控更容易识别。
             extras = Bundle().apply {
-                putInt("satellites", 10 + Random.nextInt(5))
-                putInt("satelliteCount", 10 + Random.nextInt(5))
-                putDouble("meanCn0", 30.0 + Random.nextDouble() * 6)
-                putDouble("maxCn0", 38.0 + Random.nextDouble() * 6)
+                putInt("satellites", 12)
+                putInt("satelliteCount", 12)
+                putDouble("meanCn0", 33.0)
+                putDouble("maxCn0", 42.0)
                 putBoolean("usedInFix", true)
                 putInt("steps", steps)
                 putInt("stepCount", steps)
@@ -266,13 +298,13 @@ class MockLocationService : Service() {
 
     /** 通知栏进度更新，2 秒一次，避免刷得太频繁。 */
     private fun updateNotificationIfNeeded() {
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
         if (now - notificationAt < 2000) return
         notificationAt = now
         val text = if (RouteEngine.active) {
             val percent = (RouteEngine.progress() * 100).toInt()
             String.format(
-                "%s %.1f m/s · %d%%",
+                "%s %.1f 米/秒 · %d%%",
                 if (RouteEngine.paused) "已暂停" else "移动中",
                 RouteEngine.speed,
                 percent,
@@ -328,8 +360,8 @@ class MockLocationService : Service() {
         handler.removeCallbacks(tick)
         RouteEngine.stop()
         // 停止时移除测试源，手机立即恢复真实定位
-        val snapshot = synchronized(activeProviders) { activeProviders.toList() }
-        for (provider in snapshot) {
+        // 曾注册但本轮失败的源也要清理，不能只清理当前成功列表。
+        for (provider in expectedProviders) {
             try {
                 lm.setTestProviderEnabled(provider, false)
             } catch (_: Exception) {
@@ -340,6 +372,10 @@ class MockLocationService : Service() {
             }
         }
         activeProviders.clear()
+        providerErrors = emptyMap()
+        providerLastPushAt = emptyMap()
+        expectedProviders = emptyList()
+        serviceActive = false
         running = false
         super.onDestroy()
     }

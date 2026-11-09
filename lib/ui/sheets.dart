@@ -5,9 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../core/app_update.dart';
+import '../core/backup_data.dart';
 import '../core/coord.dart';
 import '../core/models.dart';
 import '../core/storage.dart';
+import '../core/user_message.dart';
 
 /// 常用地点 / 最近记录面板。
 class SavedPlacesSheet extends StatefulWidget {
@@ -36,10 +38,33 @@ class SavedPlacesSheet extends StatefulWidget {
 
 class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
   bool _showRecents = false;
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
   late List<SavedPlace> _favorites = List.of(widget.favorites);
   late List<SavedPlace> _recents = List.of(widget.recents);
 
-  List<SavedPlace> get _items => _showRecents ? _recents : _favorites;
+  /// 搜索只读取当前列表；按名称、地址和坐标分词匹配，不请求网络。
+  List<SavedPlace> get _items {
+    final all = _showRecents ? _recents : _favorites;
+    final words = _query
+        .trim()
+        .toLowerCase()
+        .split(RegExp(r'[\s,，]+'))
+        .where((word) => word.isNotEmpty)
+        .toList();
+    if (words.isEmpty) return all;
+    return all.where((place) {
+      final text = '${place.name} ${place.address} ${formatLatLng(place.gcj)}'
+          .toLowerCase();
+      return words.every(text.contains);
+    }).toList();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   Future<void> _rename(SavedPlace place) async {
     final controller = TextEditingController(text: place.name);
@@ -57,7 +82,10 @@ class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
           onSubmitted: (v) => Navigator.pop(c, v),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(c, controller.text.trim()),
             child: const Text('保存'),
@@ -66,7 +94,12 @@ class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
       ),
     );
     if (result == null || result.isEmpty || result == place.name) return;
-    await widget.onRename(place, result);
+    try {
+      await widget.onRename(place, result);
+    } catch (error) {
+      _showSaveError(error, '重命名失败，请重试');
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _favorites = _favorites
@@ -92,7 +125,10 @@ class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
         title: const Text('删除地点'),
         content: Text('确定删除“${place.name}”吗？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(c, true),
             child: const Text('删除'),
@@ -101,7 +137,12 @@ class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
       ),
     );
     if (ok != true) return;
-    await widget.onDelete(place);
+    try {
+      await widget.onDelete(place);
+    } catch (error) {
+      _showSaveError(error, '删除失败，请重试');
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _favorites = _favorites.where((e) => e.id != place.id).toList();
@@ -109,132 +150,195 @@ class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
     });
   }
 
+  /// 保存失败时保留当前筛选和原记录，避免界面显示成功但重新打开又恢复。
+  void _showSaveError(Object error, String fallback) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(userMessage(error, fallback: fallback))),
+      );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Text('我的地点', style: theme.textTheme.titleMedium),
-              const Spacer(),
-              SegmentedButton<bool>(
-                style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: false, label: Text('常用')),
-                  ButtonSegment(value: true, label: Text('最近')),
-                ],
-                selected: {_showRecents},
-                onSelectionChanged: (v) => setState(() => _showRecents = v.first),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 340),
-            child: _items.isEmpty
-                ? SizedBox(
-                    height: 150,
-                    child: Center(
-                      child: Text(
-                        _showRecents
-                            ? '还没有模拟记录。\n每次开始模拟都会自动记在这里。'
-                            : '还没有常用地点。\n点下面的按钮把当前选点存起来。',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+    final items = _items;
+    return SingleChildScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          16 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Text('我的地点', style: theme.textTheme.titleMedium),
+                const Spacer(),
+                SegmentedButton<bool>(
+                  style: const ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('常用')),
+                    ButtonSegment(value: true, label: Text('最近')),
+                  ],
+                  selected: {_showRecents},
+                  onSelectionChanged: (v) =>
+                      setState(() => _showRecents = v.first),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _searchController,
+              onChanged: (value) => setState(() => _query = value),
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                hintText: '搜索名称、地址或坐标',
+                prefixIcon: const Icon(Icons.search),
+                border: const OutlineInputBorder(),
+                isDense: true,
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清空地点搜索',
+                        icon: const Icon(Icons.close),
+                        onPressed: () => setState(() {
+                          _searchController.clear();
+                          _query = '';
+                        }),
                       ),
-                    ),
-                  )
-                : ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: _items.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final place = _items[index];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: CircleAvatar(
-                          backgroundColor: theme.colorScheme.primaryContainer,
-                          child: Icon(
-                            _showRecents ? Icons.history : Icons.star_rounded,
-                            size: 20,
-                            color: theme.colorScheme.onPrimaryContainer,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 340),
+              child: items.isEmpty
+                  ? SizedBox(
+                      height: 150,
+                      child: Center(
+                        child: Text(
+                          _query.trim().isNotEmpty
+                              ? '没有找到匹配的地点，试试名称、地址或坐标。'
+                              : _showRecents
+                              ? '还没有模拟记录。\n每次开始模拟都会自动记在这里。'
+                              : '还没有常用地点。\n点下面的按钮把当前选点存起来。',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
-                        title: Text(
-                          place.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          place.address.isEmpty
-                              ? formatLatLng(place.gcj)
-                              : place.address,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          widget.onPick(place);
-                        },
-                        trailing: _showRecents
-                            ? IconButton(
-                                tooltip: '删除',
-                                icon: const Icon(Icons.close, size: 20),
-                                onPressed: () => _confirmDelete(place),
-                              )
-                            : PopupMenuButton<String>(
-                                icon: const Icon(Icons.more_vert, size: 20),
-                                onSelected: (value) {
-                                  if (value == 'rename') _rename(place);
-                                  if (value == 'delete') _confirmDelete(place);
-                                  if (value == 'copy') {
-                                    Clipboard.setData(
-                                      ClipboardData(text: formatLatLng(place.gcj)),
-                                    );
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('坐标已复制')),
-                                    );
-                                  }
-                                },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(value: 'rename', child: Text('重命名')),
-                                  PopupMenuItem(value: 'copy', child: Text('复制坐标')),
-                                  PopupMenuItem(value: 'delete', child: Text('删除')),
-                                ],
-                              ),
-                      );
-                    },
-                  ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                widget.onSaveCurrent();
-              },
-              icon: const Icon(Icons.add_location_alt_outlined),
-              label: const Text('把当前选点存为常用地点'),
+                      ),
+                    )
+                  : ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: items.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final place = items[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(
+                            backgroundColor: theme.colorScheme.primaryContainer,
+                            child: Icon(
+                              _showRecents ? Icons.history : Icons.star_rounded,
+                              size: 20,
+                              color: theme.colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                          title: Text(
+                            place.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            place.address.isEmpty
+                                ? formatLatLng(place.gcj)
+                                : place.address,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            widget.onPick(place);
+                          },
+                          trailing: _showRecents
+                              ? IconButton(
+                                  tooltip: '删除',
+                                  icon: const Icon(Icons.close, size: 20),
+                                  onPressed: () => _confirmDelete(place),
+                                )
+                              : PopupMenuButton<String>(
+                                  icon: const Icon(Icons.more_vert, size: 20),
+                                  onSelected: (value) {
+                                    if (value == 'rename') {
+                                      _rename(place);
+                                    }
+                                    if (value == 'delete') {
+                                      _confirmDelete(place);
+                                    }
+                                    if (value == 'copy') {
+                                      Clipboard.setData(
+                                        ClipboardData(
+                                          text: formatLatLng(place.gcj),
+                                        ),
+                                      );
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(content: Text('坐标已复制')),
+                                      );
+                                    }
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'rename',
+                                      child: Text('重命名'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'copy',
+                                      child: Text('复制坐标'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'delete',
+                                      child: Text('删除'),
+                                    ),
+                                  ],
+                                ),
+                        );
+                      },
+                    ),
             ),
-          ),
-          if (_showRecents && _recents.isNotEmpty)
-            TextButton.icon(
-              onPressed: () async {
-                await widget.onClearRecents();
-                if (mounted) setState(() => _recents = <SavedPlace>[]);
-              },
-              icon: const Icon(Icons.delete_sweep_outlined),
-              label: const Text('清空最近记录'),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  widget.onSaveCurrent();
+                },
+                icon: const Icon(Icons.add_location_alt_outlined),
+                label: const Text('把当前选点存为常用地点'),
+              ),
             ),
-        ],
+            if (_showRecents && _recents.isNotEmpty)
+              TextButton.icon(
+                onPressed: () async {
+                  await widget.onClearRecents();
+                  if (mounted) setState(() => _recents = <SavedPlace>[]);
+                },
+                icon: const Icon(Icons.delete_sweep_outlined),
+                label: const Text('清空最近记录'),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -242,11 +346,7 @@ class _SavedPlacesSheetState extends State<SavedPlacesSheet> {
 
 /// 精调面板：用方向键按米微调目标点，避免地图点击误差。
 class NudgeSheet extends StatefulWidget {
-  const NudgeSheet({
-    super.key,
-    required this.target,
-    required this.onChanged,
-  });
+  const NudgeSheet({super.key, required this.target, required this.onChanged});
 
   final LatLng target;
   final ValueChanged<LatLng> onChanged;
@@ -394,11 +494,7 @@ class _NudgeButton extends StatelessWidget {
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onTap,
-        child: SizedBox(
-          width: 56,
-          height: 56,
-          child: Icon(icon, size: 28),
-        ),
+        child: SizedBox(width: 56, height: 56, child: Icon(icon, size: 28)),
       ),
     );
   }
@@ -438,12 +534,21 @@ class SettingsSheet extends StatefulWidget {
 }
 
 class _SettingsSheetState extends State<SettingsSheet> {
-  late final TextEditingController _keyController =
-      TextEditingController(text: widget.config.amapKey);
-  late final AppConfig _config = widget.config.copy();
+  late final TextEditingController _keyController = TextEditingController(
+    text: widget.config.amapKey,
+  );
+  late AppConfig _config = widget.config.copy();
+  bool _importing = false;
 
   Future<void> _apply() async {
-    await widget.onConfigChanged(_config);
+    try {
+      await widget.onConfigChanged(_config);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _config = widget.config.copy());
+      _keyController.text = _config.amapKey;
+      _toast(userMessage(error, fallback: '设置保存失败，请重试'));
+    }
   }
 
   // 更新状态放在面板内部：这是独立路由，首页 setState 不会重建这里，
@@ -491,12 +596,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
     }
   }
 
-  String _updateMessage(Object error) {
-    final text = error is PlatformException
-        ? (error.message ?? error.code)
-        : '$error';
-    return text.replaceFirst('Exception: ', '');
-  }
+  /// 更新失败只显示中文说明，不暴露底层异常或系统堆栈。
+  String _updateMessage(Object error) =>
+      userMessage(error, fallback: '更新失败，请稍后重试');
 
   void _toast(String message) {
     if (!mounted) return;
@@ -507,104 +609,87 @@ class _SettingsSheetState extends State<SettingsSheet> {
 
   /// 把常用地点、路线和设置导出成一段 JSON 文本，放进剪贴板。
   Future<void> _exportData() async {
-    final data = <String, Object?>{
-      'app': 'fake_location',
-      'version': 1,
-      'favorites': widget.storage.readFavorites().map((e) => e.toJson()).toList(),
-      'routes': widget.storage.readRoutes().map((e) => e.toJson()).toList(),
-      'config': <String, Object?>{
-        'amapKey': _config.amapKey,
-        'mapStyle': _config.mapStyle.name,
-        'coordSystem': _config.coordSystem.name,
-        'showRadius': _config.showRadius,
-        'radiusMeters': _config.radiusMeters,
-        'writeGcj': _config.writeGcj,
-        'intervalMs': _config.intervalMs,
-        'accuracyMeters': _config.accuracyMeters,
-        'floatBar': _config.floatBar,
-        'motion': _config.motion.name,
-        'stepFreq': _config.stepFreq,
-        'stepLength': _config.stepLength,
-      },
-    };
-    await Clipboard.setData(ClipboardData(text: jsonEncode(data)));
-    _toast('已复制到剪贴板，粘贴到记事本保存即可');
+    try {
+      final data = <String, Object?>{
+        'app': 'fake_location',
+        'version': 1,
+        'favorites': widget.storage
+            .readFavorites()
+            .map((e) => e.toJson())
+            .toList(),
+        'routes': widget.storage.readRoutes().map((e) => e.toJson()).toList(),
+        'config': <String, Object?>{
+          'amapKey': _config.amapKey,
+          'mapStyle': _config.mapStyle.name,
+          'coordSystem': _config.coordSystem.name,
+          'showRadius': _config.showRadius,
+          'radiusMeters': _config.radiusMeters,
+          'writeGcj': _config.writeGcj,
+          'intervalMs': _config.intervalMs,
+          'accuracyMeters': _config.accuracyMeters,
+          'floatBar': _config.floatBar,
+          'motion': _config.motion.name,
+          'stepFreq': _config.stepFreq,
+          'stepLength': _config.stepLength,
+        },
+      };
+      await Clipboard.setData(ClipboardData(text: jsonEncode(data)));
+      _toast('已复制到剪贴板，粘贴到记事本保存即可');
+    } catch (error) {
+      _toast(userMessage(error, fallback: '导出失败，无法写入剪贴板'));
+    }
   }
 
-  /// 从剪贴板恢复备份，只接受本应用导出的格式。
+  /// 整份预检通过后才写入；保存失败时尽量恢复导入前快照，避免部分覆盖。
   Future<void> _importData() async {
-    final raw = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-    if (raw == null || raw.trim().isEmpty) {
-      _toast('剪贴板里没有内容');
-      return;
-    }
+    if (_importing) return;
+    setState(() => _importing = true);
     try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map || decoded['app'] != 'fake_location') {
-        _toast('这段文本不是本应用的备份');
+      final raw = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+      if (raw == null || raw.trim().isEmpty) {
+        _toast('剪贴板里没有内容');
         return;
       }
-      final favorites = decoded['favorites'];
-      if (favorites is List) {
-        final list = favorites
-            .map(SavedPlace.tryFromJson)
-            .whereType<SavedPlace>()
-            .toList();
-        await widget.storage.writeFavorites(list);
+      final backup = BackupData.parse(raw, baseline: _config);
+      final oldFavorites = widget.storage.readFavorites();
+      final oldRoutes = widget.storage.readRoutes();
+      final oldStoredConfig = widget.storage.readConfig();
+      final oldConfig = _config.copy();
+      try {
+        await widget.storage.writeFavorites(backup.favorites);
+        await widget.storage.writeRoutes(backup.routes);
+        await widget.storage.writeConfig(backup.config);
+        await widget.onConfigChanged(backup.config);
+      } catch (_) {
+        // 不把半份备份当作成功；每项独立恢复，某项失败也继续恢复其余数据。
+        var restored = true;
+        for (final restore in <Future<void> Function()>[
+          () => widget.storage.writeFavorites(oldFavorites),
+          () => widget.storage.writeRoutes(oldRoutes),
+          () => widget.onConfigChanged(oldConfig),
+          () => widget.storage.writeConfig(oldStoredConfig),
+        ]) {
+          try {
+            await restore();
+          } catch (_) {
+            restored = false;
+          }
+        }
+        _config = oldConfig;
+        if (mounted) _keyController.text = oldConfig.amapKey;
+        throw FormatException(
+          restored ? '导入失败，已恢复原有数据' : '导入失败，部分原有数据未能恢复，请检查本地数据',
+        );
       }
-      final routes = decoded['routes'];
-      if (routes is List) {
-        final list = routes.map(RoutePlan.tryFromJson).whereType<RoutePlan>().toList();
-        await widget.storage.writeRoutes(list);
-      }
-      final config = decoded['config'];
-      if (config is Map) {
-        _config
-          ..amapKey = config['amapKey'] is String ? config['amapKey'] as String : _config.amapKey
-          ..showRadius = config['showRadius'] is bool ? config['showRadius'] as bool : _config.showRadius
-          ..writeGcj = config['writeGcj'] is bool ? config['writeGcj'] as bool : _config.writeGcj
-          ..floatBar = config['floatBar'] is bool ? config['floatBar'] as bool : _config.floatBar;
-        if (config['mapStyle'] is String) {
-          _config.mapStyle = MapStyle.values.firstWhere(
-            (e) => e.name == config['mapStyle'],
-            orElse: () => _config.mapStyle,
-          );
-        }
-        if (config['coordSystem'] is String) {
-          _config.coordSystem = CoordSystem.values.firstWhere(
-            (e) => e.name == config['coordSystem'],
-            orElse: () => _config.coordSystem,
-          );
-        }
-        if (config['motion'] is String) {
-          _config.motion = MotionMode.values.firstWhere(
-            (e) => e.name == config['motion'],
-            orElse: () => _config.motion,
-          );
-        }
-        if (config['intervalMs'] is num) {
-          _config.intervalMs = (config['intervalMs'] as num).toInt();
-        }
-        if (config['accuracyMeters'] is num) {
-          _config.accuracyMeters = (config['accuracyMeters'] as num).toDouble();
-        }
-        if (config['radiusMeters'] is num) {
-          _config.radiusMeters = (config['radiusMeters'] as num).toDouble();
-        }
-        if (config['stepFreq'] is num) {
-          _config.stepFreq = (config['stepFreq'] as num).toDouble();
-        }
-        if (config['stepLength'] is num) {
-          _config.stepLength = (config['stepLength'] as num).toDouble();
-        }
-        _keyController.text = _config.amapKey;
-        await _apply();
-      }
+      _config = backup.config;
       if (!mounted) return;
+      _keyController.text = _config.amapKey;
       setState(() {});
       _toast('导入完成');
-    } catch (_) {
-      _toast('导入失败：内容不是合法的备份文本');
+    } catch (error) {
+      _toast(userMessage(error, fallback: '导入失败，无法读取或保存备份'));
+    } finally {
+      if (mounted) setState(() => _importing = false);
     }
   }
 
@@ -649,7 +734,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('显示签到范围圈'),
-            subtitle: Text('以目标点为圆心画 ${_config.radiusMeters.round()} 米圆，便于判断是否在范围内'),
+            subtitle: Text(
+              '以目标点为圆心画 ${_config.radiusMeters.round()} 米圆，便于判断是否在范围内',
+            ),
             value: _config.showRadius,
             onChanged: (v) {
               setState(() => _config.showRadius = v);
@@ -762,9 +849,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           ),
           Row(
             children: [
-              Expanded(
-                child: Text('模拟精度', style: theme.textTheme.bodyMedium),
-              ),
+              Expanded(child: Text('模拟精度', style: theme.textTheme.bodyMedium)),
               Text(
                 '±${_config.accuracyMeters.round()} 米',
                 style: theme.textTheme.bodySmall?.copyWith(
@@ -792,7 +877,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(
-              '精度越小，其它应用越相信这是 GPS 定位；设得太大时会退化成“大致位置”。',
+              '精度越小，其它应用越相信这是卫星定位；设得太大时会退化成“大致位置”。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -814,11 +899,10 @@ class _SettingsSheetState extends State<SettingsSheet> {
               Text('地点搜索', style: theme.textTheme.labelLarge),
               const Spacer(),
               TextButton.icon(
-                onPressed: () => widget.onOpenUrl(
-                  'https://console.amap.com/dev/key/app',
-                ),
+                onPressed: () =>
+                    widget.onOpenUrl('https://console.amap.com/dev/key/app'),
                 icon: const Icon(Icons.open_in_new, size: 16),
-                label: const Text('获取 Key'),
+                label: const Text('获取密钥'),
               ),
             ],
           ),
@@ -826,7 +910,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
           TextField(
             controller: _keyController,
             decoration: const InputDecoration(
-              hintText: '粘贴高德 Web 服务 Key（可选）',
+              hintText: '粘贴高德网络服务密钥（可选）',
               border: OutlineInputBorder(),
               isDense: true,
             ),
@@ -835,8 +919,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
           ),
           const SizedBox(height: 8),
           Text(
-            '填写后搜索将直接使用高德数据（POI 更全、坐标与高德地图完全一致），'
-            '并支持高德逆地理。留空时自动使用百度地图网页数据，再由 OSM 兜底。',
+            '填写后搜索将直接使用高德数据（地点更全、坐标与高德地图完全一致），'
+            '并支持高德逆地理。留空时自动使用百度地图网页数据，再由开放地图兜底。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -849,16 +933,15 @@ class _SettingsSheetState extends State<SettingsSheet> {
                   _config.amapKey = '';
                   await _apply();
                 },
-                child: const Text('清除 Key'),
+                child: const Text('清除密钥'),
               ),
               const Spacer(),
               FilledButton(
                 onPressed: () async {
                   await _apply();
                   if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('设置已保存')),
-                    );
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(const SnackBar(content: Text('设置已保存')));
                   }
                 },
                 child: const Text('保存'),
@@ -871,13 +954,13 @@ class _SettingsSheetState extends State<SettingsSheet> {
           Row(
             children: [
               TextButton.icon(
-                onPressed: _exportData,
+                onPressed: _importing ? null : _exportData,
                 icon: const Icon(Icons.upload_file_outlined, size: 16),
                 label: const Text('导出到剪贴板'),
               ),
               const Spacer(),
               TextButton.icon(
-                onPressed: _importData,
+                onPressed: _importing ? null : _importData,
                 icon: const Icon(Icons.download_outlined, size: 16),
                 label: const Text('从剪贴板导入'),
               ),
@@ -890,11 +973,11 @@ class _SettingsSheetState extends State<SettingsSheet> {
             ),
           ),
           const Divider(height: 28),
-          Text('需要 Root 的功能', style: theme.textTheme.labelLarge),
+          Text('需要系统提权的功能', style: theme.textTheme.labelLarge),
           const SizedBox(height: 6),
           Text(
-            'WiFi 模拟、基站模拟、独立模拟（只对某个应用生效）、反检测和 Root 隐藏，'
-            '都需要系统级权限（Root / Xposed）才能实现。本应用走免 Root 方案，'
+            '无线网络 模拟、基站模拟、独立模拟（只对某个应用生效）、反检测和 系统提权隐藏，'
+            '都需要系统级权限（系统提权或系统扩展框架）才能实现。本应用走免系统提权方案，'
             '这些开关即使做出来也不会真正生效，所以没有提供。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -908,7 +991,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.info_outline),
             title: Text(
-              widget.versionName.isEmpty ? '虚拟定位' : '虚拟定位 ${widget.versionName}',
+              widget.versionName.isEmpty
+                  ? '虚拟定位'
+                  : '虚拟定位 ${widget.versionName}',
             ),
             subtitle: Text(
               _busy
@@ -992,12 +1077,14 @@ class MockCheckSheet extends StatefulWidget {
     required this.targetWgs,
     required this.onRetryPush,
     required this.onOpenExternalApp,
+    this.onOpenAppSettings,
   });
 
   final Future<MockReport?> Function() loadReport;
   final LatLng targetWgs;
-  final VoidCallback onRetryPush;
+  final Future<void> Function() onRetryPush;
   final Future<void> Function(String package) onOpenExternalApp;
+  final Future<void> Function()? onOpenAppSettings;
 
   @override
   State<MockCheckSheet> createState() => _MockCheckSheetState();
@@ -1006,6 +1093,7 @@ class MockCheckSheet extends StatefulWidget {
 class _MockCheckSheetState extends State<MockCheckSheet> {
   MockReport? _report;
   bool _loading = true;
+  bool _retrying = false;
   String? _error;
 
   @override
@@ -1015,6 +1103,7 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
   }
 
   Future<void> _refresh() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -1024,14 +1113,31 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
       if (!mounted) return;
       setState(() {
         _report = report;
+        _error = report == null ? '未取得服务状态，请重试' : null;
         _loading = false;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = userMessage(e, fallback: '未能读取定位状态，请重试');
         _loading = false;
       });
+    }
+  }
+
+  /// 等待推送完成后再读取，避免重复点击及关闭面板后异步刷新。
+  Future<void> _retryPush() async {
+    setState(() => _retrying = true);
+    try {
+      await widget.onRetryPush();
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (mounted) await _refresh();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = userMessage(e, fallback: '重新推送失败，请重试'));
+      }
+    } finally {
+      if (mounted) setState(() => _retrying = false);
     }
   }
 
@@ -1039,167 +1145,271 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final report = _report;
-    final distance = report?.distanceTo(widget.targetWgs);
+    final target = report == null ? widget.targetWgs : _checkedTarget(report);
+    final distance = report?.distanceTo(target);
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text('检测模拟是否生效', style: theme.textTheme.titleMedium),
-              const Spacer(),
-              IconButton(
-                tooltip: '重新检测',
-                onPressed: _loading ? null : _refresh,
-                icon: const Icon(Icons.refresh, size: 20),
-              ),
-            ],
-          ),
-          if (_loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 32),
-              child: Center(child: CircularProgressIndicator()),
-            )
-          else if (_error != null)
-            Text('检测失败：$_error', style: theme.textTheme.bodySmall)
-          else if (report != null) ...[
-            _verdict(theme, report, distance),
-            const SizedBox(height: 12),
-            _row(theme, '模拟服务',
-                report.serviceRunning ? '运行中' : '未运行',
-                ok: report.serviceRunning),
-            _row(
-              theme,
-              '坐标推送',
-              report.pushCount == 0
-                  ? '尚未推送'
-                  : '已推送 ${report.pushCount} 次'
-                        '${report.elapsedMs >= 0 ? '，${(report.elapsedMs / 1000).toStringAsFixed(1)} 秒前' : ''}',
-              ok: report.pushCount > 0 && report.elapsedMs >= 0 && report.elapsedMs < 5000,
-            ),
-            _row(
-              theme,
-              '接管的定位源',
-              report.providers.isEmpty ? '无（可能未获授权）' : report.providers.join(' / '),
-              ok: report.providers.isNotEmpty,
-            ),
-            _row(
-              theme,
-              '系统读回位置',
-              report.systemWgs == null
-                  ? '读取失败'
-                  : '${report.serviceRunning ? '' : '上次 '}'
-                        '${formatLatLng(report.systemWgs!, digits: 5)}'
-                        '${report.systemAccuracy == null ? '' : ' ±${report.systemAccuracy!.round()} 米'}',
-              ok: report.systemWgs != null && report.serviceRunning,
-            ),
-            _row(
-              theme,
-              '系统标记',
-              report.systemIsMock ? '模拟定位（mock）' : '普通真实定位',
-              ok: report.systemIsMock && report.serviceRunning,
-            ),
-            if (distance != null)
-              _row(theme, '与目标偏差', formatDistance(distance), ok: distance < 50),
-            const SizedBox(height: 14),
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Row(
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      widget.onRetryPush();
-                      Future<void>.delayed(
-                        const Duration(milliseconds: 800),
-                        _refresh,
-                      );
-                    },
-                    icon: const Icon(Icons.send_rounded, size: 18),
-                    label: const Text('重新推送'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      await widget.onOpenExternalApp('com.autonavi.minimap');
-                    },
-                    icon: const Icon(Icons.map_outlined, size: 18),
-                    label: const Text('打开高德'),
-                  ),
+                Text('检测模拟是否生效', style: theme.textTheme.titleMedium),
+                const Spacer(),
+                IconButton(
+                  tooltip: '重新检测',
+                  onPressed: _loading ? null : _refresh,
+                  icon: const Icon(Icons.refresh, size: 20),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            Text(
-              '系统读回 mock 且偏差很小时，说明坐标已经全局生效。\n'
-              '如果高德仍显示原位，按顺序排查：\n'
-              '① 打开高德后点一下右下角“定位”按钮——地图不会自动跟随；\n'
-              '② 系统设置 → 应用 → 高德 → 权限 → 位置，改成“精确位置”；\n'
-              '③ 从最近任务里划掉高德，重新打开；\n'
-              '④ 临时关掉 WiFi。高德/微信会用自己的 SDK 读 WiFi 热点指纹算位置，'
-              '刷新时会盖掉模拟值——典型表现就是“刚开始对，刷新一下又回原地”。',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                height: 1.6,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8710A).withValues(alpha: 0.07),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: const Color(0xFFE8710A).withValues(alpha: 0.24),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 32),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_error != null)
+              Text('检测失败：$_error', style: theme.textTheme.bodySmall)
+            else if (report != null) ...[
+              _verdict(theme, report),
+              const SizedBox(height: 12),
+              if (report.serviceRunning && report.pushedWgs != null)
+                _row(
+                  theme,
+                  '正在模拟的坐标',
+                  formatLatLng(report.pushedWgs!, digits: 6),
+                  ok: true,
                 ),
+              _row(
+                theme,
+                '模拟服务',
+                report.serviceRunning ? '运行中' : '未运行',
+                ok: report.serviceRunning,
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.shield_outlined,
-                        size: 16,
-                        color: Color(0xFFE8710A),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        '其它应用能不能识破',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: const Color(0xFFE8710A),
-                        ),
-                      ),
-                    ],
+              _row(
+                theme,
+                '坐标推送',
+                report.pushCount == 0
+                    ? '尚未推送'
+                    : '已推送 ${report.pushCount} 次'
+                          '${report.elapsedMs >= 0 ? '，${(report.elapsedMs / 1000).toStringAsFixed(1)} 秒前' : ''}',
+                ok:
+                    report.pushCount > 0 &&
+                    report.elapsedMs >= 0 &&
+                    report.elapsedMs < 5000,
+              ),
+              _row(
+                theme,
+                '接管的定位源',
+                report.providers.isEmpty
+                    ? '无（可能未获授权）'
+                    : report.providers.map(_providerName).join(' / '),
+                ok: report.hasFullCoverage,
+              ),
+              for (final provider in report.providerLocations)
+                _row(
+                  theme,
+                  '${_providerName(provider.provider)}读回',
+                  (provider.error == null
+                          ? null
+                          : userMessage(
+                              Exception(provider.error),
+                              fallback: '暂时无法读取此定位源',
+                            )) ??
+                      (provider.point == null
+                          ? '暂无缓存，尚未确认'
+                          : '${provider.isMock ? '模拟' : '真实'} · '
+                                '${formatDistance(Coord.distanceMeters(target, provider.point!))} 偏差 · '
+                                '${(provider.ageMs / 1000).toStringAsFixed(1)} 秒前'),
+                  ok: provider.matchesTarget(target),
+                ),
+              for (final error in report.providerErrors.entries)
+                _row(
+                  theme,
+                  '${_providerName(error.key)}推送',
+                  userMessage(Exception(error.value), fallback: '定位源推送失败，请重试'),
+                  ok: false,
+                ),
+              _row(
+                theme,
+                '无线网络与扫描',
+                '${report.wifiEnabled ? '无线网络已开启' : '无线网络已关闭'} · '
+                    '${report.wifiScanEnabled ? '后台扫描已开启' : '后台扫描已关闭'}',
+                ok: true,
+              ),
+              _row(
+                theme,
+                '电池优化',
+                report.ignoringBatteryOptimizations == null
+                    ? '暂时无法读取'
+                    : report.ignoringBatteryOptimizations!
+                    ? '已允许不受电池优化限制'
+                    : '仍受系统电池优化限制',
+                ok: report.ignoringBatteryOptimizations,
+              ),
+              _row(
+                theme,
+                '省电模式',
+                report.powerSaveMode == null
+                    ? '暂时无法读取'
+                    : report.powerSaveMode!
+                    ? '已开启，可能降低后台更新频率'
+                    : '未开启',
+                ok: report.powerSaveMode == null
+                    ? null
+                    : !report.powerSaveMode!,
+              ),
+              _row(
+                theme,
+                '后台运行限制',
+                report.backgroundRestricted == null
+                    ? '当前系统未提供此状态'
+                    : report.backgroundRestricted!
+                    ? '系统已限制本应用后台运行'
+                    : '系统未限制本应用后台运行',
+                ok: report.backgroundRestricted == null
+                    ? null
+                    : !report.backgroundRestricted!,
+              ),
+              for (final error in report.powerErrors.values)
+                _row(
+                  theme,
+                  '后台状态读取',
+                  userMessage(Exception(error), fallback: '暂时无法读取后台限制'),
+                  ok: null,
+                ),
+              if (widget.onOpenAppSettings != null)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: widget.onOpenAppSettings,
+                    icon: const Icon(Icons.battery_saver_outlined, size: 18),
+                    label: const Text('检查后台运行设置'),
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '系统投递这个位置时会打上“模拟”标记（FLAG_MOCK），'
-                    '任何有定位权限的应用一行代码就能读到，免 root 去不掉。'
-                    '实测两个常见应用：\n'
-                    '· 飞书：内置高德定位 SDK，会读这个标记；\n'
-                    '· 微信：读的是 Android 6 以前的旧开关，现代系统上通常读不到。\n'
-                    '钉钉这类强风控应用另有策略，无法保证。'
-                    '要去掉标记只能用 root + LSPosed，或把目标应用装进容器里运行。',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                      height: 1.6,
+                ),
+              _row(
+                theme,
+                '系统读回位置',
+                report.systemWgs == null
+                    ? '读取失败'
+                    : '${report.serviceRunning ? '' : '上次 '}'
+                          '${formatLatLng(report.systemWgs!, digits: 5)}'
+                          '${report.systemAccuracy == null ? '' : ' ±${report.systemAccuracy!.round()} 米'}',
+                ok: report.systemWgs != null && report.serviceRunning,
+              ),
+              _row(
+                theme,
+                '系统标记',
+                report.systemIsMock ? '模拟定位' : '普通真实定位',
+                ok: report.systemIsMock && report.serviceRunning,
+              ),
+              if (distance != null)
+                _row(
+                  theme,
+                  '与目标偏差',
+                  formatDistance(distance),
+                  ok: distance < 50,
+                ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _retrying || _loading ? null : _retryPush,
+                      icon: const Icon(Icons.send_rounded, size: 18),
+                      label: const Text('重新推送'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () async {
+                        await widget.onOpenExternalApp('com.autonavi.minimap');
+                      },
+                      icon: const Icon(Icons.map_outlined, size: 18),
+                      label: const Text('打开高德'),
                     ),
                   ),
                 ],
               ),
-            ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () => widget.onOpenExternalApp('com.tencent.mm'),
+                  icon: const Icon(Icons.chat_outlined, size: 18),
+                  label: const Text('打开微信'),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '逐个定位源显示近期模拟坐标且偏差在 50 米内，才表示系统位置校验通过。\n'
+                '微信、高德可能结合无线网络、基站或自己的缓存计算位置；系统校验通过不等于每个应用都会采用。\n'
+                '若目标应用仍显示原位，可先点击其定位按钮刷新、检查精确位置权限，'
+                '再分别关闭无线网络与系统“无线网络扫描”对比。免系统提权方案无法改写热点或基站数据。',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  height: 1.6,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE8710A).withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0xFFE8710A).withValues(alpha: 0.24),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.shield_outlined,
+                          size: 16,
+                          color: Color(0xFFE8710A),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '应用兼容性说明',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: const Color(0xFFE8710A),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '系统会为模拟位置添加标记，具有定位权限的应用可以识别。'
+                      '不同应用可能使用各自的定位和风险判断方式，无法保证都会采用模拟位置。'
+                      '免系统提权方案不能去除系统模拟标记。',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        height: 1.6,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
 
-  Widget _verdict(ThemeData theme, MockReport report, double? distance) {
+  /// 对比服务实际执行的点；地图上新选但未应用的点不能让正常服务被误报为失效。
+  LatLng _checkedTarget(MockReport report) => report.serviceRunning
+      ? report.pushedWgs ?? widget.targetWgs
+      : widget.targetWgs;
+
+  Widget _verdict(ThemeData theme, MockReport report) {
     final Color color;
     final IconData icon;
     final String title;
@@ -1210,26 +1420,36 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
       icon = Icons.error_outline;
       title = '未设为模拟位置应用';
       detail = '开发者选项 →“选择模拟位置信息应用”→ 选择“虚拟定位”，再点开始模拟。';
-    } else if (!report.serviceRunning || report.pushCount == 0) {
+    } else if (!report.isPushing) {
       color = const Color(0xFFD93025);
       icon = Icons.error_outline;
       title = '模拟服务没有在推送';
       detail = '可能被系统清理了，点下面“重新推送”，并在电池设置里允许后台运行。';
+    } else if (!report.hasFullCoverage) {
+      color = const Color(0xFFE8710A);
+      icon = Icons.warning_amber_rounded;
+      title = '部分定位源尚未接管';
+      detail = '不同应用可能使用不同定位源，请检查下方失败原因；服务会自动重试恢复。';
+    } else if (!report.isEffective) {
+      color = const Color(0xFFE8710A);
+      icon = Icons.warning_amber_rounded;
+      title = '部分定位源尚未确认';
+      detail = '有定位源未读回近期模拟坐标，请重新检测并查看逐源结果。';
     } else if (!report.systemIsMock) {
       color = const Color(0xFFE8710A);
       icon = Icons.warning_amber_rounded;
       title = '系统仍返回真实定位';
-      detail = '测试源可能被 ROM 拦截；请确认开发者选项里的模拟位置应用，并尝试重启手机后再开始。';
-    } else if (distance != null && distance > 50) {
+      detail = '测试源可能被 系统固件拦截；请确认开发者选项里的模拟位置应用，并尝试重启手机后再开始。';
+    } else if (!report.matchesTarget(_checkedTarget(report))) {
       color = const Color(0xFFE8710A);
       icon = Icons.warning_amber_rounded;
       title = '系统位置与目标不一致';
-      detail = '系统返回的位置与目标相差 ${formatDistance(distance)}，请点“重新推送”再检测。';
+      detail = '至少一个定位源与目标偏差超过 50 米，请点“重新推送”再检测。';
     } else {
       color = const Color(0xFF17B978);
       icon = Icons.check_circle_outline;
-      title = '已生效，全局位置已改到目标点';
-      detail = '其它应用还显示原位时：先点它右下角的“定位”按钮刷新，或从最近任务划掉重开。';
+      title = '系统定位源校验通过';
+      detail = '各系统源均返回目标附近的模拟坐标；目标应用使用独立定位时，请按下方方法对比。';
     }
 
     return Container(
@@ -1263,11 +1483,20 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
     );
   }
 
+  /// 原生定位源名称只用作内部标识，界面统一显示中文。
+  String _providerName(String name) => switch (name) {
+    'gps' => '卫星',
+    'network' => '网络',
+    'fused' => '融合',
+    'passive' => '被动',
+    _ => '未知来源',
+  };
+
   Widget _row(
     ThemeData theme,
     String label,
     String value, {
-    required bool ok,
+    required bool? ok,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
@@ -1287,10 +1516,12 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
             child: Text(
               value,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: ok
+                color: ok == null
+                    ? theme.colorScheme.onSurfaceVariant
+                    : ok
                     ? theme.colorScheme.onSurface
                     : const Color(0xFFD93025),
-                fontWeight: ok ? FontWeight.w500 : FontWeight.w600,
+                fontWeight: ok == false ? FontWeight.w600 : FontWeight.w500,
               ),
             ),
           ),

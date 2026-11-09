@@ -38,10 +38,19 @@ class CoordinateReading {
 /// - `gcj:39.908722,116.397499`（wgs / bd 同理）
 /// - `geo:39.908722,116.397499`
 class CoordinateInput {
+  /// 分享文本含链接时使用专用解析，禁止从短链 ID 或任意网页数字猜测坐标。
+  static bool containsLink(String text) =>
+      RegExp(r'https?://', caseSensitive: false).hasMatch(text);
+
+  /// 地理链接必须单独解析，地址查询不能按普通地点名称或主体占位坐标处理。
+  static bool isGeoLink(String text) =>
+      text.trim().toLowerCase().startsWith('geo:');
+
   /// 解析失败返回 null。
   static CoordinateReading? parse(String raw) {
     var text = raw.trim();
     if (text.isEmpty) return null;
+    if (containsLink(text) && !isGeoLink(text)) return _parseMapLink(text);
 
     // 全角符号归一化
     text = text
@@ -52,25 +61,7 @@ class CoordinateInput {
         .replaceAll('º', '°')
         .replaceAll('　', ' ');
 
-    // geo:lat,lng?z=17 这类链接
-    final geo = RegExp(
-      r'^geo:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)',
-      caseSensitive: false,
-    ).firstMatch(text);
-    if (geo != null) {
-      final lat = double.tryParse(geo.group(1)!);
-      final lng = double.tryParse(geo.group(2)!);
-      if (lat == null || lng == null) return null;
-      if (lat.abs() > 90 || lng.abs() > 180) return null;
-      final wgs = LatLng(lat, lng);
-      return CoordinateReading(
-        gcj: Coord.wgsToGcj(wgs),
-        source: CoordSystem.wgs,
-        latitude: lat,
-        longitude: lng,
-        pretty: 'geo:$lat,$lng',
-      );
-    }
+    if (isGeoLink(text)) return _parseGeoUri(text);
 
     // 坐标系前缀
     var system = CoordSystem.wgs;
@@ -88,93 +79,50 @@ class CoordinateInput {
       text = text.substring(prefix.end);
     }
 
-    // 把度分秒符号换成空格，逐段取数字与方向字母
+    // 按完整角度分组，禁止把非法分钟、多余数字或文本静默吞掉。
     final normalized = text
         .replaceAll(RegExp(r'[°º度]'), ' ')
         .replaceAll(RegExp(r"['′’分]"), ' ')
-        .replaceAll(RegExp(r'["″”秒]'), ' ');
-
-    final tokens = RegExp(
-      r'(-?\d+(?:\.\d+)?)|([NSEWnsew北南东西])',
-    ).allMatches(normalized).map((m) => m.group(0)!).toList();
-    if (tokens.isEmpty) return null;
-
-    final numbers = <double>[];
-    final directions = <String>[];
-    for (final token in tokens) {
-      final value = double.tryParse(token);
-      if (value != null) {
-        numbers.add(value);
-      } else {
-        directions.add(token.toUpperCase());
-      }
-    }
-    if (numbers.length < 2) return null;
-
+        .replaceAll(RegExp(r'["″”秒:]'), ' ')
+        .trim();
+    final directional = RegExp(r'[NSEWnsew北南东西]').hasMatch(normalized);
     double? lat;
     double? lng;
-
-    if (directions.length >= 2) {
-      // 有方向字母：按最近的数字分组，N/S 是纬度，E/W 是经度
-      var index = 0;
-      for (final dir in directions) {
-        final isLat = dir == 'N' || dir == 'S' || dir == '北' || dir == '南';
-        final remaining = numbers.length - index;
-        if (remaining < 1) break;
-        // 每个方向最多带走 3 个数字（度分秒）
-        final take = remaining >= 3 && _looksDms(numbers, index) ? 3 : 1;
-        if (take == 3) {
-          final value = _dms(numbers[index], numbers[index + 1], numbers[index + 2]);
-          if (isLat && lat == null) lat = value;
-          if (!isLat && lng == null) lng = value;
-          index += 3;
-        } else {
-          if (isLat && lat == null) lat = numbers[index];
-          if (!isLat && lng == null) lng = numbers[index];
-          index += 1;
-        }
-      }
-      if (lat == null || lng == null) {
-        // 方向不全时，剩余数字按纬度、经度补齐
-        final rest = numbers.sublist(index.clamp(0, numbers.length));
-        for (final value in rest) {
-          if (lat == null) {
-            lat = value;
-          } else {
-            lng ??= value;
-          }
-        }
-      }
-    } else if (numbers.length == 2) {
-      lat = numbers[0];
-      lng = numbers[1];
-    } else if (numbers.length == 4) {
-      lat = _dms(numbers[0], numbers[1], 0);
-      lng = _dms(numbers[2], numbers[3], 0);
-    } else if (numbers.length >= 6) {
-      lat = _dms(numbers[0], numbers[1], numbers[2]);
-      lng = _dms(numbers[3], numbers[4], numbers[5]);
+    if (directional) {
+      final point = _parseDirectional(normalized);
+      if (point == null) return null;
+      lat = point.latitude;
+      lng = point.longitude;
     } else {
-      return null;
+      final parts = normalized.split(RegExp(r'[\s,;]+'));
+      final numbers = <double>[];
+      for (final part in parts) {
+        final value = double.tryParse(part);
+        if (value == null || !value.isFinite) return null;
+        numbers.add(value);
+      }
+      if (numbers.length != 2 && numbers.length != 4 && numbers.length != 6) {
+        return null;
+      }
+      final width = numbers.length ~/ 2;
+      lat = _angle(numbers.sublist(0, width));
+      lng = _angle(numbers.sublist(width));
     }
-
     if (lat == null || lng == null) return null;
-
-    // 带方向字母时按方向取正负
     var outLat = lat;
     var outLng = lng;
-    for (final dir in directions) {
-      if (dir == 'S' || dir == '南') outLat = -outLat.abs();
-      if (dir == 'W' || dir == '西') outLng = -outLng.abs();
-    }
-
-    // 明显写反（纬度 > 90 而经度合法）时交换
-    if (outLat.abs() > 90 && outLng.abs() <= 90) {
+    // 明显写反的裸坐标可交换；有方向标记时必须尊重其含义，不能改写标注。
+    if (!directional && outLat.abs() > 90 && outLng.abs() <= 90) {
       final swap = outLat;
       outLat = outLng;
       outLng = swap;
     }
-    if (outLat.abs() > 90 || outLng.abs() > 180) return null;
+    if (!outLat.isFinite ||
+        !outLng.isFinite ||
+        outLat.abs() > 90 ||
+        outLng.abs() > 180) {
+      return null;
+    }
 
     final raw100 = LatLng(outLat, outLng);
     final gcj = switch (system) {
@@ -182,6 +130,7 @@ class CoordinateInput {
       CoordSystem.wgs => Coord.wgsToGcj(raw100),
       CoordSystem.bd09 => Coord.bd09ToGcj(raw100),
     };
+    if (!Coord.isValidPoint(gcj)) return null;
     return CoordinateReading(
       gcj: gcj,
       source: system,
@@ -191,17 +140,194 @@ class CoordinateInput {
     );
   }
 
-  /// 三个数字连续且后两个小于 60，视为度分秒。
-  static bool _looksDms(List<double> numbers, int index) {
-    if (index + 2 >= numbers.length) return false;
-    final minute = numbers[index + 1];
-    final second = numbers[index + 2];
-    return minute.abs() < 60 && second.abs() < 60;
+  /// Android 的 q 参数才是标注点；地址或非法查询不能回退到主体的 0,0 占位点。
+  static CoordinateReading? _parseGeoUri(String text) {
+    try {
+      final uri = Uri.tryParse(text);
+      if (uri == null || uri.hasAuthority || uri.hasFragment) return null;
+      final body = RegExp(
+        r'^\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*$',
+      ).firstMatch(uri.path);
+      if (body == null) return null;
+      final query = uri.queryParametersAll['q'];
+      if (query != null && query.length != 1) return null;
+      final match = query == null
+          ? body
+          : RegExp(
+              r'^\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*(?:\([^()]*\))?\s*$',
+            ).firstMatch(query.single);
+      if (match == null) return null;
+      final lat = double.tryParse(match.group(1)!);
+      final lng = double.tryParse(match.group(2)!);
+      if (lat == null ||
+          lng == null ||
+          !lat.isFinite ||
+          !lng.isFinite ||
+          lat.abs() > 90 ||
+          lng.abs() > 180) {
+        return null;
+      }
+      final point = LatLng(lat, lng);
+      return CoordinateReading(
+        gcj: Coord.wgsToGcj(point),
+        source: CoordSystem.wgs,
+        latitude: lat,
+        longitude: lng,
+        pretty: 'geo:$lat,$lng',
+      );
+    } on FormatException {
+      return null;
+    }
   }
 
-  static double _dms(double degree, double minute, double second) {
-    final sign = degree < 0 ? -1.0 : 1.0;
+  /// 只读取地图官方 URI 中明确的单点坐标；不联网展开短链或猜测坐标系。
+  static CoordinateReading? _parseMapLink(String text) {
+    final links = RegExp(
+      r'''https?://[^\s<>"'，。]+''',
+      caseSensitive: false,
+    ).allMatches(text).toList();
+    if (links.length != 1) return null;
+    try {
+      final uri = Uri.tryParse(links.single.group(0)!);
+      if (uri == null || uri.userInfo.isNotEmpty) return null;
+      final params = uri.queryParameters;
+      if (uri.queryParametersAll.values.any((values) => values.length != 1)) {
+        return null;
+      }
+      final path = uri.path.replaceFirst(RegExp(r'/$'), '');
+      String? pair;
+      var longitudeFirst = false;
+      CoordSystem? system;
+      if (uri.host == 'uri.amap.com' && path == '/marker') {
+        pair = params['position'];
+        longitudeFirst = true;
+        system = switch (params['coordinate'] ?? 'gaode') {
+          'gaode' => CoordSystem.gcj,
+          'wgs84' => CoordSystem.wgs,
+          _ => null,
+        };
+      } else if (uri.host == 'api.map.baidu.com' &&
+          (path == '/marker' || path == '/geocoder')) {
+        pair = params['location'];
+        system = switch (params['coord_type'] ?? 'bd09ll') {
+          'bd09ll' => CoordSystem.bd09,
+          'gcj02' => CoordSystem.gcj,
+          'wgs84' => CoordSystem.wgs,
+          _ => null,
+        };
+      } else if (uri.host == 'apis.map.qq.com' && path == '/uri/v1/marker') {
+        final marker = params['marker'] ?? '';
+        if (marker.contains('|')) return null;
+        final coords = marker
+            .split(';')
+            .where((part) => part.startsWith('coord:'));
+        if (coords.length != 1) return null;
+        pair = coords.single.substring('coord:'.length);
+        system = switch (params['coord_type'] ?? '2') {
+          '2' => CoordSystem.gcj,
+          '1' => CoordSystem.wgs,
+          _ => null,
+        };
+      } else if ((uri.host == 'www.google.com' || uri.host == 'google.com') &&
+          path == '/maps/search' &&
+          params['api'] == '1' &&
+          !params.containsKey('query_place_id')) {
+        pair = params['query'];
+        system = CoordSystem.wgs;
+      }
+      if (pair == null || system == null) return null;
+      final parts = pair.split(',');
+      if (parts.length != 2) return null;
+      final first = double.tryParse(parts[0].trim());
+      final second = double.tryParse(parts[1].trim());
+      if (first == null ||
+          second == null ||
+          !first.isFinite ||
+          !second.isFinite) {
+        return null;
+      }
+      final lat = longitudeFirst ? second : first;
+      final lng = longitudeFirst ? first : second;
+      if (lat.abs() > 90 || lng.abs() > 180) return null;
+      final point = LatLng(lat, lng);
+      return CoordinateReading(
+        gcj: switch (system) {
+          CoordSystem.gcj => point,
+          CoordSystem.wgs => Coord.wgsToGcj(point),
+          CoordSystem.bd09 => Coord.bd09ToGcj(point),
+        },
+        source: system,
+        latitude: lat,
+        longitude: lng,
+        pretty: '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}',
+      );
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// 支持方向在前或在后，但每个轴只能出现一次且必须消费完整输入。
+  static ({double latitude, double longitude})? _parseDirectional(String text) {
+    const angle =
+        r'([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:\s+[+-]?(?:\d+(?:\.\d+)?|\.\d+)){0,2})';
+    const direction = r'([NSEWnsew北南东西])';
+    for (final prefix in [false, true]) {
+      final pattern = RegExp(
+        prefix ? '$direction\\s*$angle' : '$angle\\s*$direction',
+      );
+      final matches = pattern.allMatches(text).toList();
+      final remainder = text
+          .replaceAll(pattern, '')
+          .replaceAll(RegExp(r'[\s,;]+'), '');
+      if (matches.length != 2 || remainder.isNotEmpty) continue;
+      double? lat;
+      double? lng;
+      var valid = true;
+      for (final match in matches) {
+        final tag = match.group(prefix ? 1 : 2)!.toUpperCase();
+        final parts = match
+            .group(prefix ? 2 : 1)!
+            .split(RegExp(r'\s+'))
+            .map(double.parse)
+            .toList();
+        final value = _angle(parts);
+        if (value == null) {
+          valid = false;
+          break;
+        }
+        if (tag == 'N' || tag == 'S' || tag == '北' || tag == '南') {
+          if (lat != null) {
+            valid = false;
+            break;
+          }
+          lat = (tag == 'S' || tag == '南') ? -value.abs() : value.abs();
+        } else {
+          if (lng != null) {
+            valid = false;
+            break;
+          }
+          lng = (tag == 'W' || tag == '西') ? -value.abs() : value.abs();
+        }
+      }
+      if (valid && lat != null && lng != null) {
+        return (latitude: lat, longitude: lng);
+      }
+    }
+    return null;
+  }
+
+  /// 分、秒只能在零到六十之间，保留零度的负号。
+  static double? _angle(List<double> parts) {
+    if (parts.isEmpty ||
+        parts.length > 3 ||
+        parts.any((value) => !value.isFinite)) {
+      return null;
+    }
+    if (parts.skip(1).any((value) => value < 0 || value >= 60)) return null;
+    final sign = parts.first.isNegative ? -1.0 : 1.0;
     return sign *
-        (degree.abs() + minute.abs() / 60 + second.abs() / 3600);
+        (parts.first.abs() +
+            (parts.length > 1 ? parts[1] / 60 : 0) +
+            (parts.length > 2 ? parts[2] / 3600 : 0));
   }
 }

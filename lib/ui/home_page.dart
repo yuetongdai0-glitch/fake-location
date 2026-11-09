@@ -8,9 +8,12 @@ import 'package:latlong2/latlong.dart';
 
 import '../core/app_update.dart';
 import '../core/coord.dart';
+import '../core/coordinate_input.dart';
 import '../core/models.dart';
 import '../core/search_api.dart';
 import '../core/storage.dart';
+import '../core/user_message.dart';
+import '../core/joystick_motion.dart';
 import 'coordinate_sheet.dart';
 import 'route_page.dart';
 import 'sheets.dart';
@@ -52,7 +55,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _mapReady = false;
 
   List<Place> _results = const [];
-  List<String> _suggestions = const [];
   String? _searchHint;
 
   List<SavedPlace> _favorites = const [];
@@ -69,12 +71,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Timer? _resolveTimer;
   Timer? _suggestTimer;
   Timer? _healthTimer;
-  int _suggestSeq = 0;
+  int _searchSeq = 0;
+  int _mockGeneration = 0;
 
   /// 虚拟摇杆：开启后按住就能像走路一样实时移动目标点。
   bool _joystickOn = false;
   Offset _stick = Offset.zero;
   Timer? _stickTimer;
+  final Stopwatch _stickClock = Stopwatch();
+  int _lastStickTickMs = 0;
+  double _stickBearing = 0;
 
   @override
   void initState() {
@@ -90,6 +96,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _resolveTimer?.cancel();
     _suggestTimer?.cancel();
     _healthTimer?.cancel();
+    _stickTimer?.cancel();
+    _stickClock.stop();
     _searchCtrl.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -97,7 +105,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refreshRunning();
+    if (state == AppLifecycleState.resumed) {
+      _refreshRunning();
+    } else if (_stick != Offset.zero) {
+      // 失去前台时可能收不到松手事件，不能继续在后台按最后方向移动。
+      _onStick(Offset.zero);
+    }
   }
 
   // ---------------------------------------------------------------- 初始化
@@ -129,16 +142,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _refreshRunning() async {
+    final generation = _mockGeneration;
     try {
       final running = await _mockChannel.invokeMethod<bool>('isRunning');
-      if (mounted && running != null) setState(() => _running = running);
+      if (mounted && running != null && generation == _mockGeneration) {
+        setState(() => _running = running);
+        if (running) _startHealthCheck();
+      }
     } catch (_) {}
   }
 
   Future<void> _loadVersionAndCheckUpdate() async {
     try {
-      final version = await _updateChannel
-          .invokeMapMethod<String, dynamic>('version');
+      final version = await _updateChannel.invokeMapMethod<String, dynamic>(
+        'version',
+      );
       if (version != null && mounted) {
         setState(() {
           _installedVersionCode = version['versionCode'] as int? ?? 0;
@@ -201,7 +219,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       });
       if (mounted) _toast('安装包已下载，请在系统安装器中完成更新');
     } on PlatformException catch (e) {
-      if (mounted) _toast(e.message ?? '更新失败');
+      if (mounted) _toast(userMessage(e, fallback: '下载安装失败，请重试'));
     } finally {
       if (mounted) setState(() => _updateBusy = false);
     }
@@ -220,7 +238,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       final raw = await _mockChannel.invokeMapMethod<String, dynamic>(
         'getLocation',
-        {'fresh': fresh},
+        {'fresh': fresh, 'realOnly': fresh},
       );
       if (raw == null) {
         if (!silent) _showLocationHelp();
@@ -262,9 +280,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     } catch (e) {
       if (!silent) {
-        final message = e is PlatformException
-            ? (e.message ?? e.code)
-            : e.toString();
+        final message = userMessage(e, fallback: '未能读取位置，请检查定位权限');
         _toast('获取位置失败：$message');
         _showLocationHelp();
       }
@@ -299,13 +315,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     bool resolve = false,
     bool keepSearchText = false,
   }) {
+    _cancelSearch();
     setState(() {
       _target = gcj;
       _targetName = name;
       _targetAddress = address;
       _targetSource = source;
       _results = const [];
-      _suggestions = const [];
+      _searching = false;
       _searchHint = null;
       if (!keepSearchText) _searchCtrl.clear();
     });
@@ -317,11 +334,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _schedulePersist() {
     _persistTimer?.cancel();
-    _persistTimer = Timer(const Duration(milliseconds: 600), () {
+    _persistTimer = Timer(const Duration(milliseconds: 600), () async {
       _config.lastTarget = _target;
       _config.lastName = _targetName;
       _config.lastAddress = _targetAddress;
-      _storage?.writeConfig(_config);
+      try {
+        await _storage?.writeConfig(_config);
+      } catch (error) {
+        _toast(userMessage(error, fallback: '选点保存失败，下次打开可能无法恢复'));
+      }
     });
   }
 
@@ -330,9 +351,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _resolveTimer = Timer(const Duration(milliseconds: 400), () async {
       if (!mounted) return;
       setState(() => _resolving = true);
-      final address = await SearchApi(
-        amapKey: _config.amapKey,
-      ).reverseGeocode(point);
+      final address = await SearchApi(amapKey: _config.amapKey)
+          .reverseGeocode(point);
       if (!mounted) return;
       setState(() {
         _resolving = false;
@@ -345,10 +365,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   // ---------------------------------------------------------------- 搜索
 
+  /// 立刻废弃防抖和在途请求；即使网络回包较晚，也不能重新弹出已关闭的列表。
+  void _cancelSearch() {
+    _suggestTimer?.cancel();
+    _searchSeq++;
+  }
+
+  /// 清空搜索时保留当前选点，并允许立即输入下一次搜索。
+  void _clearSearch() {
+    _cancelSearch();
+    setState(() {
+      _searchCtrl.clear();
+      _results = const [];
+      _searchHint = null;
+      _searching = false;
+    });
+    _searchFocus.requestFocus();
+  }
+
+  /// 提交关键词搜索；结果只由当前请求更新，避免旧请求覆盖新输入或选点。
   Future<void> _search() async {
+    _cancelSearch();
+    final seq = _searchSeq;
     final query = _searchCtrl.text.trim();
     if (query.isEmpty) {
-      _searchFocus.requestFocus();
+      _clearSearch();
       return;
     }
     FocusScope.of(context).unfocus();
@@ -357,7 +398,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (coord != null) {
       _setTarget(
         coord,
-        name: '坐标选点',
+        name: CoordinateInput.containsLink(query) ? '链接选点' : '坐标选点',
         source: PlaceSource.pasted,
         move: true,
         resolve: true,
@@ -365,19 +406,28 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
+    if (CoordinateInput.containsLink(query) ||
+        CoordinateInput.isGeoLink(query)) {
+      // 未解析的短链不交给地点搜索，避免把链接 ID 或跟踪参数当成地点查询。
+      setState(() {
+        _searching = false;
+        _results = const [];
+        _searchHint = CoordinateInput.isGeoLink(query)
+            ? '地理链接未包含明确且有效的单点坐标。请复制经纬度，地址查询不能直接用于定位。'
+            : '链接未包含可直接读取的单点坐标。请复制经纬度，或使用带坐标的高德、百度、腾讯、谷歌地点链接。';
+      });
+      return;
+    }
+
     setState(() {
       _searching = true;
       _results = const [];
-      _suggestions = const [];
       _searchHint = null;
     });
     try {
-      final outcome = await SearchApi(amapKey: _config.amapKey).search(
-        query,
-        center: _mapCenter(),
-        origin: _real ?? _mapCenter(),
-      );
-      if (!mounted) return;
+      final outcome = await SearchApi(amapKey: _config.amapKey)
+          .search(query, center: _mapCenter(), origin: _real ?? _mapCenter());
+      if (!mounted || seq != _searchSeq) return;
       setState(() {
         _results = outcome.places;
         _searchHint = outcome.places.isEmpty
@@ -388,33 +438,50 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _toastWithAction('搜索失败：${outcome.notes.first}', '设置搜索源', _openSettings);
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _searchHint = '搜索失败：${_friendly(e)}');
+      if (mounted && seq == _searchSeq) {
+        setState(() => _searchHint = '搜索失败，请检查网络连接后重试');
       }
     } finally {
-      if (mounted) setState(() => _searching = false);
+      if (mounted && seq == _searchSeq) {
+        setState(() => _searching = false);
+      }
     }
   }
 
-  /// 输入时做 400ms 防抖的联想，减少“名称不完整搜不到”的情况。
+  /// 输入防抖后展示带地址和坐标的候选地点，与正式搜索共用一次选择即可落点的列表。
   void _onQueryChanged(String value) {
-    _suggestTimer?.cancel();
+    _cancelSearch();
+    final seq = _searchSeq;
     final query = value.trim();
-    if (query.length < 2 || parseCoordinateQuery(query) != null) {
-      // 输入的是坐标时不需要联想，直接回车跳转。
-      if (_suggestions.isNotEmpty) setState(() => _suggestions = const []);
+    setState(() {
+      _results = const [];
+      _searchHint = null;
+      _searching = false;
+    });
+    if (query.length < 2 ||
+        CoordinateInput.containsLink(query) ||
+        CoordinateInput.isGeoLink(query) ||
+        parseCoordinateQuery(query) != null) {
       return;
     }
     _suggestTimer = Timer(const Duration(milliseconds: 400), () async {
-      final seq = ++_suggestSeq;
-      final list = await SearchApi(
-        amapKey: _config.amapKey,
-      ).suggest(query, center: _mapCenter());
-      if (!mounted || seq != _suggestSeq) return;
-      setState(() => _suggestions = list);
+      setState(() => _searching = true);
+      try {
+        final list = await SearchApi(amapKey: _config.amapKey)
+            .suggest(query, center: _mapCenter());
+        if (!mounted || seq != _searchSeq) return;
+        setState(() => _results = list);
+      } catch (_) {
+        // 联想失败仍保留回车搜索入口，不弹出阻断输入的提示。
+      } finally {
+        if (mounted && seq == _searchSeq) {
+          setState(() => _searching = false);
+        }
+      }
     });
   }
 
+  /// 选中候选直接应用坐标，不再以候选名称发起第二轮搜索。
   void _applyResult(Place place) {
     _setTarget(
       place.gcj,
@@ -436,26 +503,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// 读取一次「模拟是否生效」的检测数据：服务状态 + 系统读回的位置。
   Future<MockReport?> _loadMockReport() async {
-    final status = await _mockChannel.invokeMapMethod<String, dynamic>(
-      'mockStatus',
-    );
     Map<String, dynamic>? location;
     try {
       location = await _mockChannel.invokeMapMethod<String, dynamic>(
         'getLocation',
-        {'fresh': false},
+        {'fresh': false, 'cachedOnly': true},
       );
     } catch (_) {
       location = null;
     }
+    // getLocation 在无缓存时可能等待更新，服务快照必须在等待结束后读取。
+    final wifi = await _wifiStatus();
+    final power = await _powerStatus();
+    final status = await _mockChannel.invokeMapMethod<String, dynamic>(
+      'mockStatus',
+    );
     if (status == null) return null;
     final providers =
         (status['providers'] as List?)?.map((e) => '$e').toList() ??
         const <String>[];
     final lat = (location?['lat'] as num?)?.toDouble();
     final lng = (location?['lng'] as num?)?.toDouble();
+    final pushedLat = (status['lat'] as num?)?.toDouble();
+    final pushedLng = (status['lng'] as num?)?.toDouble();
+    final pushed = pushedLat == null || pushedLng == null
+        ? null
+        : LatLng(pushedLat, pushedLng);
     return MockReport(
-      serviceRunning: status['running'] == true,
+      pushedWgs: pushed != null && Coord.isValidPoint(pushed) ? pushed : null,
+      serviceRunning: (status['serviceActive'] ?? status['running']) == true,
       mockAppSelected: status['mockApp'] == true,
       pushCount: (status['pushCount'] as num?)?.toInt() ?? 0,
       elapsedMs: (status['elapsedMs'] as num?)?.toInt() ?? -1,
@@ -464,6 +540,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       systemAccuracy: (location?['accuracy'] as num?)?.toDouble(),
       systemIsMock: location?['mock'] == true,
       systemProvider: location?['provider'] as String?,
+      expectedProviders:
+          (status['expectedProviders'] as List?)?.map((e) => '$e').toList() ??
+          const [],
+      providerErrors:
+          (status['providerErrors'] as Map?)?.map(
+            (key, value) => MapEntry('$key', '$value'),
+          ) ??
+          const {},
+      providerLocations:
+          (status['providerLocations'] as List?)
+              ?.whereType<Map>()
+              .map(MockProviderReport.fromMap)
+              .toList() ??
+          const [],
+      wifiEnabled: wifi['enabled'] == true,
+      wifiScanEnabled: wifi['scanAlwaysAvailable'] == true,
+      ignoringBatteryOptimizations:
+          power['ignoringBatteryOptimizations'] as bool?,
+      powerSaveMode: power['powerSaveMode'] as bool?,
+      backgroundRestricted: power['backgroundRestricted'] as bool?,
+      powerErrors:
+          (power['errors'] as Map?)?.map(
+            (key, value) => MapEntry('$key', '$value'),
+          ) ??
+          const {},
     );
   }
 
@@ -476,10 +577,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       builder: (_) => MockCheckSheet(
         loadReport: _loadMockReport,
         targetWgs: _writePoint,
-        onRetryPush: () => _mockChannel.invokeMethod('start', {
-          'lat': _writePoint.latitude,
-          'lng': _writePoint.longitude,
-        }),
+        onRetryPush: _start,
+        onOpenAppSettings: _openAppSettings,
         onOpenExternalApp: _openExternalApp,
       ),
     );
@@ -489,25 +588,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       await _mockChannel.invokeMethod('openApp', {'package': package});
     } on PlatformException catch (e) {
-      _toast(e.message ?? '无法打开该应用');
+      _toast(userMessage(e, fallback: '无法打开目标应用，请检查是否已安装'));
     }
   }
 
   /// 开始模拟后自动校验一次，没生效就提示用户去检测。
-  Future<void> _verifyAfterStart() async {
+  Future<void> _verifyAfterStart(LatLng startedTarget, int generation) async {
     await Future<void>.delayed(const Duration(milliseconds: 1600));
-    if (!mounted) return;
+    if (!mounted || generation != _mockGeneration || !_running) return;
     try {
       final report = await _loadMockReport();
-      if (report == null || !mounted) return;
-      final distance = report.distanceTo(_writePoint);
-      final effective =
-          report.systemIsMock && (distance == null || distance < 60);
-      if (!effective) {
+      if (report == null || !mounted || generation != _mockGeneration) return;
+      if (!report.matchesTarget(startedTarget)) {
         _toastWithAction(
-          report.mockAppSelected
-              ? '模拟坐标还没生效：系统仍返回真实位置'
-              : '还没把本应用设为“模拟位置信息应用”',
+          report.mockAppSelected ? '部分定位源尚未确认生效，请查看检测详情' : '还没把本应用设为“模拟位置信息应用”',
           '查看检测',
           _openMockCheck,
         );
@@ -525,12 +619,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         return;
       }
       if (!_running) return;
+      final generation = _mockGeneration;
       try {
         final status = await _mockChannel.invokeMapMethod<String, dynamic>(
           'mockStatus',
         );
-        if (!mounted || status == null) return;
-        final alive = status['running'] == true && (status['pushCount'] as num? ?? 0) > 0;
+        if (!mounted || status == null || generation != _mockGeneration) return;
+        // 推送暂时失败时服务仍在自动重试，保留停止入口，不误报恢复真实定位。
+        final alive = (status['serviceActive'] ?? status['running']) == true;
         if (!alive) {
           setState(() => _running = false);
           // 可能是被系统清理，也可能是在悬浮条上点了“回真实位置”
@@ -540,74 +636,43 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
-  /// 本次会话是否已经提示过 WiFi 干扰。
-  bool _wifiPrompted = false;
-
-  /// 读 WiFi 状态。开着 WiFi 或「WiFi 扫描」时，第三方 SDK 会自己用热点指纹算位置，
-  /// 刷新后就把系统里的模拟值盖掉了——表现就是「刚开始对、刷新一下又回到原地」。
+  /// WiFi 仅作为诊断信息，不把开启 WiFi 当成系统模拟失败的证据。
   Future<Map<String, dynamic>> _wifiStatus() async {
     try {
-      return await _mockChannel.invokeMapMethod<String, dynamic>('wifiStatus') ??
+      return await _mockChannel.invokeMapMethod<String, dynamic>(
+            'wifiStatus',
+          ) ??
           const {};
     } catch (_) {
       return const {};
     }
   }
 
-  /// 开始模拟前确认 WiFi 干扰。返回 true 表示继续开始。
-  Future<bool> _confirmWifiInterference() async {
-    if (_wifiPrompted) return true;
-    final wifi = await _wifiStatus();
-    if (wifi['interfering'] != true) return true;
-    if (!mounted) return true;
-    _wifiPrompted = true;
-
-    final ssid = wifi['ssid'] as String?;
-    final scanAlways = wifi['scanAlwaysAvailable'] == true;
-    final reason = ssid != null
-        ? '当前连接着「$ssid」'
-        : scanAlways
-        ? '「WiFi 扫描始终可用」是开着的'
-        : 'WiFi 是开着的';
-
-    final action = await showDialog<String>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('WiFi 会盖掉模拟位置'),
-        content: Text(
-          '$reason。\n\n'
-          '高德、微信这类应用会用自己的 SDK 读 WiFi 热点指纹算一次位置，'
-          '刷新时就盖掉系统里的模拟值——这就是「刚开始对、刷新一下又回原地」的原因。\n\n'
-          '临时关掉 WiFi（或关掉「WiFi 扫描」）后，它们只能读系统位置，模拟就稳了。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(c, 'cancel'),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(c, 'settings'),
-            child: const Text('去关闭 WiFi'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(c, 'proceed'),
-            child: const Text('仍然开始'),
-          ),
-        ],
-      ),
-    );
-
-    if (action == 'settings') {
-      await _mockChannel.invokeMethod('openWifiSettings');
-      return false;
+  /// 只读取后台限制，不替用户授予电池豁免或改变省电设置。
+  Future<Map<String, dynamic>> _powerStatus() async {
+    try {
+      return await _mockChannel.invokeMapMethod<String, dynamic>(
+            'powerStatus',
+          ) ??
+          const {};
+    } catch (_) {
+      return const {};
     }
-    return action == 'proceed';
+  }
+
+  /// 打开本应用详情，由用户按设备提供的选项调整后台运行权限。
+  Future<void> _openAppSettings() async {
+    try {
+      await _mockChannel.invokeMethod('openAppSettings');
+    } catch (error) {
+      _toast(userMessage(error, fallback: '无法打开应用设置，请手动进入系统设置'));
+    }
   }
 
   Future<void> _start() async {
-    if (!await _confirmWifiInterference()) return;
     if (!mounted) return;
     final write = _writePoint;
+    final generation = ++_mockGeneration;
     try {
       await _mockChannel.invokeMethod('start', {
         'lat': write.latitude,
@@ -615,6 +680,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         'intervalMs': _config.intervalMs,
         'accuracy': _config.accuracyMeters,
       });
+      if (!mounted || generation != _mockGeneration) return;
       setState(() => _running = true);
       if (_config.floatBar) unawaited(_syncFloatBar(true));
       final place = Place(
@@ -623,40 +689,59 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         address: _targetAddress ?? '',
         source: _targetSource ?? PlaceSource.manual,
       );
-      await _storage?.addRecent(place);
-      if (mounted) setState(() => _recents = _storage?.readRecents() ?? _recents);
+      String? recentWarning;
+      // 服务已经启动，历史记录保存失败不能遮住停止入口或跳过服务校验。
+      try {
+        await _storage?.addRecent(place);
+      } catch (error) {
+        recentWarning = userMessage(error, fallback: '最近记录保存失败');
+      }
+      if (!mounted || generation != _mockGeneration) return;
+      setState(() => _recents = _storage?.readRecents() ?? _recents);
       unawaited(_locate(silent: true));
-      unawaited(_verifyAfterStart());
+      unawaited(_verifyAfterStart(write, generation));
       _startHealthCheck();
       _toast(
         '已开始模拟：${_config.writeGcj ? 'GCJ-02' : 'WGS-84'} '
-        '${formatLatLng(write, digits: 6)}',
+        '${formatLatLng(write, digits: 6)}'
+        '${recentWarning == null ? '' : '；$recentWarning'}',
       );
     } on PlatformException catch (e) {
+      if (!mounted || generation != _mockGeneration) return;
       if (e.code == 'NOT_MOCK_APP') {
         _showMockGuide();
       } else {
-        _toast('启动失败：${e.message}');
+        _toast(userMessage(e, fallback: '启动失败，请检查模拟位置授权后重试'));
       }
     }
   }
 
   Future<void> _stop() async {
+    final generation = ++_mockGeneration;
+    _stickTimer?.cancel();
+    _stickTimer = null;
+    _stickClock
+      ..stop()
+      ..reset();
+    _stick = Offset.zero;
     try {
       await _mockChannel.invokeMethod('stop');
+      if (!mounted || generation != _mockGeneration) return;
       setState(() => _running = false);
       _healthTimer?.cancel();
       unawaited(_syncFloatBar(false));
       unawaited(_locate(silent: true, fresh: true));
       _toast('已停止，恢复真实定位');
     } on PlatformException catch (e) {
-      _toast('停止失败：${e.message}');
+      _toast(userMessage(e, fallback: '停止失败，请重试'));
     }
   }
 
   // ---------------------------------------------------------------- 路线 / 摇杆
 
   Future<void> _openRoute() async {
+    if (_stick != Offset.zero) _onStick(Offset.zero);
+    _mockGeneration++;
     final storage = _storage;
     if (storage == null) return;
     await Navigator.of(context).push(
@@ -677,11 +762,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _toggleJoystick() {
     setState(() => _joystickOn = !_joystickOn);
-    if (!_joystickOn) {
-      _stick = Offset.zero;
-      _stickTimer?.cancel();
-      _stickTimer = null;
-    }
+    if (!_joystickOn) _onStick(Offset.zero);
   }
 
   /// 把指针位置换算成 -1~1 的方向向量。
@@ -694,11 +775,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// 摇杆回调：值为 -1~1 的方向向量，松手回零。
   void _onStick(Offset value) {
+    final wasMoving = _stick != Offset.zero || _stickTimer != null;
     setState(() => _stick = value);
     if (value == Offset.zero) {
       _stickTimer?.cancel();
       _stickTimer = null;
+      _stickClock
+        ..stop()
+        ..reset();
+      _lastStickTickMs = 0;
+      if (_running && wasMoving) {
+        unawaited(_pushManualMotion(0, _stickBearing));
+      }
       return;
+    }
+    if (!_stickClock.isRunning) {
+      _stickClock
+        ..reset()
+        ..start();
+      _lastStickTickMs = 0;
     }
     _stickTimer ??= Timer.periodic(
       const Duration(milliseconds: 200),
@@ -706,42 +801,53 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  /// 每 200ms 沿摇杆方向走一步，速度由运动方式（步频步幅或档位）决定。
+  /// 摇杆按实际经过时间、杆量及共享球面正解移动，速度与写入系统的字段一致。
   Future<void> _stickStep() async {
     final stick = _stick;
-    if (stick == Offset.zero) return;
+    if (stick == Offset.zero || !mounted) return;
+    final now = _stickClock.elapsedMilliseconds;
+    final elapsed = now - _lastStickTickMs;
+    _lastStickTickMs = now;
     final motion = _config.motion;
-    final double speed = (motion.usesSteps
-            ? _config.stepFreq / 60 * _config.stepLength
-            : motion.defaultSpeed)
-        .clamp(0.3, 60.0)
-        .toDouble();
-    // 200ms 走一步，单步不超过 5 米，避免异常值把目标点甩飞
-    final double meters = (speed * 0.2).clamp(0.05, 5.0).toDouble();
-    final rad = atan2(stick.dx, -stick.dy);
-    final lat = _target.latitude;
-    final lng = _target.longitude;
-    final cosLat = cos(lat * pi / 180).abs();
-    final double dLat = meters * cos(rad) / 110540.0;
-    final double dLng = meters * sin(rad) / (111320.0 * (cosLat < 0.01 ? 0.01 : cosLat));
-    if (!dLat.isFinite || !dLng.isFinite) return;
-    final next = LatLng(lat + dLat, lng + dLng);
+    final speed = motion.usesSteps
+        ? _config.stepFreq / 60 * _config.stepLength
+        : motion.defaultSpeed;
+    final step = advanceJoystick(
+      origin: _config.writeGcj ? _target : Coord.gcjToWgs(_target),
+      north: -stick.dy,
+      east: stick.dx,
+      speed: speed,
+      elapsedMs: elapsed,
+    );
+    _stickBearing = step.bearing;
+    final nextTarget = _config.writeGcj
+        ? step.point
+        : Coord.wgsToGcj(step.point);
     setState(() {
-      _target = next;
+      _target = nextTarget;
       _targetName ??= '摇杆移动';
     });
-    _moveTo(next, _mapReady ? _map.camera.zoom : 17);
+    _moveTo(nextTarget, _mapReady ? _map.camera.zoom : 17);
     _schedulePersist();
-    if (!_running) return;
+    if (_running) await _pushManualMotion(step.speed, step.bearing);
+  }
+
+  /// 松杆时也立即下发零速度，不能让停止的坐标保留“正在移动”的速度标记。
+  Future<void> _pushManualMotion(double speed, double bearing) async {
+    _mockGeneration++;
     final write = _writePoint;
     try {
       await _mockChannel.invokeMethod('start', <String, Object?>{
         'lat': write.latitude,
         'lng': write.longitude,
+        'manualSpeed': speed,
+        'manualBearing': bearing,
         'intervalMs': _config.intervalMs,
         'accuracy': _config.accuracyMeters,
       });
-    } catch (_) {}
+    } catch (error) {
+      _toast(userMessage(error, fallback: '位置更新失败，请重试'));
+    }
   }
 
   // ---------------------------------------------------------------- 常用地点
@@ -773,7 +879,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(c, controller.text.trim()),
             child: const Text('保存'),
@@ -787,11 +896,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     list.removeWhere(
       (e) => e.name == name && Coord.distanceMeters(e.gcj, place.gcj) < 50,
     );
-    list.insert(
-      0,
-      SavedPlace.fromPlace(place, name: name),
-    );
-    await _storage?.writeFavorites(list);
+    list.insert(0, SavedPlace.fromPlace(place, name: name));
+    try {
+      await _storage?.writeFavorites(list);
+    } catch (error) {
+      _toast(userMessage(error, fallback: '地点保存失败，请重试'));
+      return;
+    }
     if (!mounted) return;
     setState(() => _favorites = list);
     _toast('已保存“$name”');
@@ -816,8 +927,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
         onDelete: (saved) async {
           final list = _favorites.where((e) => e.id != saved.id).toList();
-          await _storage?.writeFavorites(list);
-          if (mounted) setState(() => _favorites = list);
+          if (_favorites.any((place) => place.id == saved.id)) {
+            await _storage?.writeFavorites(list);
+          } else {
+            await _storage?.removeRecent(saved.id);
+          }
+          if (mounted) {
+            setState(() {
+              _favorites = list;
+              _recents = _storage?.readRecents() ?? _recents;
+            });
+          }
         },
         onRename: (saved, name) async {
           final list = _favorites
@@ -866,13 +986,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             _targetName ??= '微调位置';
             _targetAddress = null;
           });
-          if (_running) {
-            final write = _config.writeGcj ? p : Coord.gcjToWgs(p);
-            _mockChannel.invokeMethod('start', {
-              'lat': write.latitude,
-              'lng': write.longitude,
-            });
-          }
+          if (_running) unawaited(_pushManualMotion(0, 0));
           _schedulePersist();
         },
       ),
@@ -897,13 +1011,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             move: true,
             resolve: true,
           );
-          if (_running) {
-            final write = _config.writeGcj ? gcj : Coord.gcjToWgs(gcj);
-            _mockChannel.invokeMethod('start', {
-              'lat': write.latitude,
-              'lng': write.longitude,
-            });
-          }
+          if (_running) unawaited(_pushManualMotion(0, 0));
         },
       ),
     );
@@ -924,8 +1032,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         updateBusy: _updateBusy,
         onConfigChanged: (config) async {
           final wantedFloat = config.floatBar;
-          setState(() => _config = config);
           await _storage?.writeConfig(config);
+          if (!mounted) return;
+          setState(() => _config = config);
           await _syncFloatBar(wantedFloat);
         },
         onCheckUpdate: () => _checkUpdate(manual: true),
@@ -934,6 +1043,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         storage: _storage!,
       ),
     );
+    if (mounted && _storage != null) {
+      setState(() {
+        _favorites = _storage!.readFavorites();
+        _recents = _storage!.readRecents();
+      });
+    }
   }
 
   /// 显示/隐藏悬浮控制条；没有悬浮窗权限时引导去系统设置里授权。
@@ -956,10 +1071,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  Future<void> _openUrl(String url) async {    try {
+  Future<void> _openUrl(String url) async {
+    try {
       await _mockChannel.invokeMethod('openUrl', {'url': url});
     } on PlatformException catch (e) {
-      _toast(e.message ?? '无法打开链接');
+      _toast(userMessage(e, fallback: '无法打开链接，请检查浏览器'));
     }
   }
 
@@ -991,20 +1107,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
   }
 
-  String _friendly(Object error) {
-    final text = error.toString();
-    return text.startsWith('Exception: ') ? text.substring(11) : text;
-  }
-
   /// 定位来源的中文短标签（gps / network / fused / passive）。
   String _providerLabel(String? provider) {
     if (provider == null || provider.isEmpty) return '';
     return switch (provider) {
-      'gps' => ' · GPS',
+      'gps' => ' · 卫星',
       'network' => ' · 网络',
       'fused' => ' · 融合',
       'passive' => ' · 被动',
-      _ => ' · $provider',
+      _ => ' · 未知来源',
     };
   }
 
@@ -1067,9 +1178,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     if (_storage == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     return Scaffold(
       key: _scaffoldKey,
@@ -1084,15 +1193,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 _buildSearchBar(theme),
                 if (_searchHint != null) _buildHintCard(theme),
                 if (_results.isNotEmpty) Flexible(child: _buildResults(theme)),
-                if (_results.isEmpty &&
-                    _searchHint == null &&
-                    _suggestions.isNotEmpty)
-                  Flexible(child: _buildSuggestions(theme)),
               ],
             ),
           ),
-          if (_results.isEmpty && _suggestions.isEmpty)
-            _buildMapControls(theme),
+          if (_results.isEmpty) _buildMapControls(theme),
           if (_joystickOn) _buildJoystick(theme),
           _buildTargetPanel(theme),
         ],
@@ -1127,17 +1231,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 children: [
                   Row(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(9),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.20),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(
-                          Icons.my_location,
-                          color: Colors.white,
-                          size: 22,
-                        ),
+                      // 与桌面图标共用品牌资产，避免应用内外使用不同的定位标识。
+                      Image.asset(
+                        'assets/branding/app-icon.png',
+                        width: 42,
+                        height: 42,
+                        semanticLabel: '虚拟定位标志',
                       ),
                       const SizedBox(width: 12),
                       const Text(
@@ -1163,8 +1262,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                     child: Text(
                       _installedVersionName.isEmpty
-                          ? '免 Root 位置模拟'
-                          : 'v$_installedVersionName · 免 Root',
+                          ? '免系统提权位置模拟'
+                          : '版本 $_installedVersionName · 免系统提权',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 11.5,
@@ -1178,7 +1277,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 children: [
-                  _drawerItem(theme, Icons.place_outlined, '位置模拟', selected: true),
+                  _drawerItem(
+                    theme,
+                    Icons.place_outlined,
+                    '位置模拟',
+                    selected: true,
+                  ),
                   _drawerItem(
                     theme,
                     Icons.pin_drop_outlined,
@@ -1238,7 +1342,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      '免 Root 方案 · 仅用于开发调试与学习',
+                      '免系统提权方案 · 仅用于开发调试与学习',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                         fontSize: 11,
@@ -1385,7 +1489,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       width: 34,
                       height: 34,
                       decoration: BoxDecoration(
-                        color: _running ? const Color(0xFF17B978) : scheme.primary,
+                        color: _running
+                            ? const Color(0xFF17B978)
+                            : scheme.primary,
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 3),
                         boxShadow: const [
@@ -1405,10 +1511,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     Container(
                       width: 2,
                       height: 12,
-                      color: (_running
-                              ? const Color(0xFF17B978)
-                              : scheme.primary)
-                          .withValues(alpha: 0.8),
+                      color:
+                          (_running ? const Color(0xFF17B978) : scheme.primary)
+                              .withValues(alpha: 0.8),
                     ),
                   ],
                 ),
@@ -1451,10 +1556,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case MapStyle.road:
         return [
           TileLayer(
-            urlTemplate: tiles(
-              'wprd0{s}',
-              'lang=zh_cn&size=1&scl=1&style=8',
-            ),
+            urlTemplate: tiles('wprd0{s}', 'lang=zh_cn&size=1&scl=1&style=8'),
             subdomains: subdomains,
             maxNativeZoom: 18,
             userAgentPackageName: ua,
@@ -1463,10 +1565,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case MapStyle.standard:
         return [
           TileLayer(
-            urlTemplate: tiles(
-              'wprd0{s}',
-              'lang=zh_cn&size=1&scale=1&style=7',
-            ),
+            urlTemplate: tiles('wprd0{s}', 'lang=zh_cn&size=1&scale=1&style=7'),
             subdomains: subdomains,
             maxNativeZoom: 18,
             userAgentPackageName: ua,
@@ -1525,15 +1624,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   height: 18,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              )
-            else if (_searchCtrl.text.isNotEmpty)
+              ),
+            if (_searchCtrl.text.isNotEmpty)
               IconButton(
                 icon: const Icon(Icons.close_rounded, size: 20),
-                onPressed: () => setState(() {
-                  _searchCtrl.clear();
-                  _results = const [];
-                  _searchHint = null;
-                }),
+                tooltip: '清空搜索',
+                onPressed: _clearSearch,
               ),
             IconButton(
               tooltip: '搜索',
@@ -1569,10 +1665,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  _searchHint!,
-                  style: theme.textTheme.bodySmall,
-                ),
+                child: Text(_searchHint!, style: theme.textTheme.bodySmall),
               ),
               IconButton(
                 visualDensity: VisualDensity.compact,
@@ -1580,51 +1673,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 onPressed: () => setState(() => _searchHint = null),
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSuggestions(ThemeData theme) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      child: Material(
-        elevation: 4,
-        borderRadius: BorderRadius.circular(16),
-        color: theme.colorScheme.surface,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 300),
-          child: ListView.separated(
-            shrinkWrap: true,
-            padding: EdgeInsets.zero,
-            itemCount: _suggestions.length,
-            separatorBuilder: (_, _) => const Divider(height: 1, indent: 48),
-            itemBuilder: (context, index) {
-              final text = _suggestions[index];
-              return ListTile(
-                dense: true,
-                leading: Icon(
-                  Icons.search,
-                  size: 18,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                title: Text(
-                  text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                onTap: () {
-                  _searchCtrl
-                    ..text = text
-                    ..selection = TextSelection.collapsed(
-                      offset: text.length,
-                    );
-                  setState(() => _suggestions = const []);
-                  _search();
-                },
-              );
-            },
           ),
         ),
       ),
@@ -1862,7 +1910,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
     if (chosen == null || chosen == _config.mapStyle) return;
     setState(() => _config.mapStyle = chosen);
-    await _storage?.writeConfig(_config);
+    try {
+      await _storage?.writeConfig(_config);
+    } catch (error) {
+      _toast(userMessage(error, fallback: '地图样式保存失败，请重试'));
+    }
   }
 
   Widget _buildTargetPanel(ThemeData theme) {
@@ -1870,8 +1922,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final shown = _config.coordSystem.fromGcj(_target);
     final accuracy = _realAccuracy;
     final statusColor = _running ? const Color(0xFF17B978) : scheme.outline;
-    final title = _targetName ??
-        (_resolving ? '正在解析地址…' : (_targetAddress ?? '地图选点'));
+    final title =
+        _targetName ?? (_resolving ? '正在解析地址…' : (_targetAddress ?? '地图选点'));
     final subtitle = _targetAddress ?? '未解析到地址';
 
     return Positioned(
@@ -1944,10 +1996,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                               '${_providerLabel(_realProvider)}',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: theme.textTheme.labelSmall
-                                        ?.copyWith(
-                                          color: scheme.onSurfaceVariant,
-                                        ),
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: scheme.onSurfaceVariant,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -1990,9 +2041,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       icon: const Icon(Icons.copy_rounded),
                       onPressed: () {
                         Clipboard.setData(
-                          ClipboardData(
-                            text: formatLatLng(shown, digits: 6),
-                          ),
+                          ClipboardData(text: formatLatLng(shown, digits: 6)),
                         );
                         _toast('已复制 ${_config.coordSystem.label} 坐标');
                       },

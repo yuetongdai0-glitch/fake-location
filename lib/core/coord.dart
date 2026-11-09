@@ -5,6 +5,20 @@ import 'package:latlong2/latlong.dart';
 /// 坐标系工具：全国范围内使用 GCJ-02（高德/腾讯瓦片），系统 GPS 写入 WGS-84，
 /// 百度 POI 返回 BD-09 墨卡托，需要统一换算成地图坐标（GCJ-02）。
 class Coord {
+  /// 与安卓路线引擎共用的平均地球半径；球面模型不代表椭球测地精度。
+  static const double earthRadiusMeters = 6371008.8;
+
+  /// 系统和地图边界只接受有限、合法的经纬度，不把坏坐标夹成其它地点。
+  static bool isValidPoint(LatLng point) =>
+      point.latitude.isFinite &&
+      point.longitude.isFinite &&
+      point.latitude.abs() <= 90 &&
+      point.longitude.abs() <= 180;
+
+  static void _requirePoint(LatLng point) {
+    if (!isValidPoint(point)) throw ArgumentError('经纬度必须是范围内的有限数值');
+  }
+
   static const double _a = 6378245.0;
   static const double _ee = 0.00669342162296594323;
 
@@ -122,6 +136,7 @@ class Coord {
 
   /// WGS-84 → GCJ-02（国测局加偏）。
   static LatLng wgsToGcj(LatLng p) {
+    _requirePoint(p);
     if (_outOfChina(p.latitude, p.longitude)) return p;
     var dLat = _tLat(p.longitude - 105.0, p.latitude - 35.0);
     var dLng = _tLng(p.longitude - 105.0, p.latitude - 35.0);
@@ -134,8 +149,10 @@ class Coord {
     return LatLng(p.latitude + dLat, p.longitude + dLng);
   }
 
-  /// GCJ-02 → WGS-84，迭代反解，误差约厘米级。
+  /// GCJ-02 → WGS-84，迭代反解加偏模型；数值往返残差不等于真实定位精度。
+  /// 矩形适用范围沿用既有策略，边界附近不承诺有唯一或厘米级的物理反解。
   static LatLng gcjToWgs(LatLng g) {
+    _requirePoint(g);
     if (_outOfChina(g.latitude, g.longitude)) return g;
     var w = g;
     for (var i = 0; i < 6; i++) {
@@ -150,6 +167,7 @@ class Coord {
 
   /// BD-09 → GCJ-02。
   static LatLng bd09ToGcj(LatLng b) {
+    _requirePoint(b);
     const xPi = pi * 3000.0 / 180.0;
     final x = b.longitude - 0.0065;
     final y = b.latitude - 0.006;
@@ -160,18 +178,19 @@ class Coord {
 
   /// GCJ-02 → BD-09（少数需要百度坐标的场景备用）。
   static LatLng gcjToBd09(LatLng g) {
+    _requirePoint(g);
     const xPi = pi * 3000.0 / 180.0;
-    final z = sqrt(g.longitude * g.longitude + g.latitude * g.latitude) +
+    final z =
+        sqrt(g.longitude * g.longitude + g.latitude * g.latitude) +
         0.00002 * sin(g.latitude * xPi);
-    final theta = atan2(g.latitude, g.longitude) + 0.000003 * cos(g.longitude * xPi);
-    return LatLng(
-      z * sin(theta) + 0.006,
-      z * cos(theta) + 0.0065,
-    );
+    final theta =
+        atan2(g.latitude, g.longitude) + 0.000003 * cos(g.longitude * xPi);
+    return LatLng(z * sin(theta) + 0.006, z * cos(theta) + 0.0065);
   }
 
   /// 百度墨卡托（BD-09MC）→ GCJ-02：百度地图网页搜索只返回墨卡托坐标。
   static LatLng bd09McToGcj(double x, double y) {
+    if (!x.isFinite || !y.isFinite) throw ArgumentError('墨卡托坐标必须是有限数值');
     final row = _pickRow(y);
     final lng = (row[0] + row[1] * x.abs()) * (x < 0 ? -1 : 1);
     final basis = y.abs() / row[9];
@@ -193,32 +212,62 @@ class Coord {
     return _mc2ll.last;
   }
 
-  /// 按米平移坐标（正北 / 正东为正）。
+  /// 按初始正北/正东方向的合位移作球面正解，跨极点和日期线时保持合法坐标。
   static LatLng offsetMeters(LatLng p, {double north = 0, double east = 0}) {
-    const metersPerDegree = 111319.49079327358;
-    final dLat = north / metersPerDegree;
-    final dLng =
-        east / (metersPerDegree * cos(p.latitude * pi / 180).abs().clamp(1e-6, 1));
-    return LatLng(p.latitude + dLat, p.longitude + dLng);
+    _requirePoint(p);
+    final meters = sqrt(north * north + east * east);
+    if (!north.isFinite || !east.isFinite || !meters.isFinite) {
+      throw ArgumentError('平移距离必须是有限数值');
+    }
+    if (meters == 0) return p;
+    final arc = meters / earthRadiusMeters;
+    final latitude = p.latitude * pi / 180;
+    final longitude = p.longitude * pi / 180;
+    final sinLat = sin(latitude);
+    final cosLat = cos(latitude);
+    final sinLng = sin(longitude);
+    final cosLng = cos(longitude);
+    final alongNorth = north / meters;
+    final alongEast = east / meters;
+    final cosArc = cos(arc);
+    final sinArc = sin(arc);
+    // 在位置、正北、正东三个单位向量上展开，避免极点经度公式出现 0/0。
+    // 精确极点的“北/东”沿输入经线建立局部方向，保证环线各方向不退化。
+    final x =
+        cosArc * cosLat * cosLng +
+        sinArc * (-alongNorth * sinLat * cosLng - alongEast * sinLng);
+    final y =
+        cosArc * cosLat * sinLng +
+        sinArc * (-alongNorth * sinLat * sinLng + alongEast * cosLng);
+    final z = cosArc * sinLat + sinArc * alongNorth * cosLat;
+    final movedLatitude = atan2(z, sqrt(x * x + y * y));
+    final movedLongitude = atan2(y, x);
+    return LatLng(
+      movedLatitude * 180 / pi,
+      ((movedLongitude * 180 / pi + 180) % 360) - 180,
+    );
   }
 
-  /// 两点间距离（米）。
+  /// 两点间最短球面距离（米）；夹紧舍入误差，避免对跖点出现无效数值。
   static double distanceMeters(LatLng a, LatLng b) {
-    const earthRadius = 6378137.0;
+    _requirePoint(a);
+    _requirePoint(b);
     final dLat = (b.latitude - a.latitude) * pi / 180;
     final dLng = (b.longitude - a.longitude) * pi / 180;
     final lat1 = a.latitude * pi / 180;
     final lat2 = b.latitude * pi / 180;
-    final h = sin(dLat / 2) * sin(dLat / 2) +
-        cos(lat1) * cos(lat2) * sin(dLng / 2) * sin(dLng / 2);
-    return 2 * earthRadius * atan2(sqrt(h), sqrt(1 - h));
+    final h =
+        (sin(dLat / 2) * sin(dLat / 2) +
+                cos(lat1) * cos(lat2) * sin(dLng / 2) * sin(dLng / 2))
+            .clamp(0.0, 1.0);
+    return 2 * earthRadiusMeters * atan2(sqrt(h), sqrt(1 - h));
   }
 }
 
 /// 坐标显示格式。
 enum CoordSystem {
   gcj('GCJ-02', '高德/腾讯'),
-  wgs('WGS-84', '系统 GPS'),
+  wgs('WGS-84', '系统卫星'),
   bd09('BD-09', '百度');
 
   const CoordSystem(this.label, this.hint);
@@ -236,6 +285,7 @@ enum CoordSystem {
 
 /// 距离的易读表示。
 String formatDistance(double meters) {
+  if (!meters.isFinite || meters < 0) return '距离未知';
   if (meters < 1000) return '${meters.round()} 米';
   return '${(meters / 1000).toStringAsFixed(meters < 10000 ? 1 : 0)} 公里';
 }

@@ -29,6 +29,7 @@ void main() {
     test('路线长度与预计耗时合理', () {
       final plan = RoutePlan(
         points: const [LatLng(39.9000, 116.4000), LatLng(39.9010, 116.4000)],
+        playMode: PlayMode.once,
         motion: MotionMode.walk,
         stepFreq: 120,
         stepLength: 0.7,

@@ -14,7 +14,7 @@
     <!-- 悬浮控制条：在其它应用之上显示模拟状态并可暂停/停止 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
 
-    <!-- 读取 WiFi 状态：用于提示“WiFi 定位会盖掉模拟位置” -->
+    <!-- 读取 WiFi 状态：供检测面板提示第三方应用独立定位的可能性 -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <!-- 应用内更新：下载完成后调用系统安装器 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
@@ -69,6 +69,9 @@
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
     <queries>
+        <!-- 检测面板仅需启动这两个目标应用，避免申请全量应用可见性。 -->
+        <package android:name="com.autonavi.minimap"/>
+        <package android:name="com.tencent.mm"/>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>

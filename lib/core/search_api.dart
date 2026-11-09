@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import 'coord.dart';
+import 'coordinate_input.dart';
 import 'models.dart';
 
 /// 一次搜索的结果：命中的地点，以及被跳过的数据源说明。
@@ -47,7 +48,10 @@ class SearchApi {
       try {
         final list = await _searchAmap(keyword, center);
         if (list.isNotEmpty) {
-          return SearchOutcome(places: _withDistance(list, anchor), notes: notes);
+          return SearchOutcome(
+            places: _withDistance(list, anchor),
+            notes: notes,
+          );
         }
         notes.add('高德未匹配到结果');
       } catch (e) {
@@ -70,9 +74,9 @@ class SearchApi {
       if (list.isNotEmpty) {
         return SearchOutcome(places: _withDistance(list, anchor), notes: notes);
       }
-      notes.add('OSM 未匹配到结果');
+      notes.add('开放地图未匹配到结果');
     } catch (e) {
-      notes.add('OSM：${_friendly(e)}');
+      notes.add('开放地图：${_friendly(e)}');
     }
 
     return SearchOutcome(places: const [], notes: notes);
@@ -130,13 +134,14 @@ class SearchApi {
     return null;
   }
 
-  /// 百度联想接口需要城市 ID，这里缓存最近一次搜索拿到的城市。
+  /// 缓存最近一次百度搜索城市，减少输入联想时重复识别城市。
   static int? _baiduCityId;
 
-  /// 输入联想：帮助用户拼出完整地名（很多地点搜不到是因为名称不完整）。
-  Future<List<String>> suggest(String prefix, {LatLng? center}) async {
+  /// 联想直接携带可定位的 POI，点击一次即可落点；无坐标的关键词交给搜索源补全。
+  Future<List<Place>> suggest(String prefix, {LatLng? center}) async {
     final keyword = prefix.trim();
     if (keyword.length < 2) return const [];
+    final anchor = center ?? const LatLng(39.9087, 116.3975);
 
     if (amapKey.trim().isNotEmpty) {
       try {
@@ -144,83 +149,59 @@ class SearchApi {
           'key': amapKey.trim(),
           'keywords': keyword,
           'datatype': 'all',
-          if (center != null)
-            'location':
-                '${center.longitude.toStringAsFixed(6)},${center.latitude.toStringAsFixed(6)}',
+          'location':
+              '${anchor.longitude.toStringAsFixed(6)},${anchor.latitude.toStringAsFixed(6)}',
         });
         final json = await _getJson(uri);
         if ('${json['status']}' == '1') {
           final tips = json['tips'];
+          final places = <Place>[];
           if (tips is List) {
-            final names = <String>[];
             for (final tip in tips) {
               if (tip is! Map) continue;
-              final name = '${tip['name'] ?? ''}'.trim();
-              if (name.isEmpty || names.contains(name)) continue;
-              names.add(name);
-              if (names.length >= 10) break;
+              final name = _firstString(tip['name']);
+              final location = _firstString(tip['location']).split(',');
+              if (name.isEmpty || location.length != 2) continue;
+              final lng = double.tryParse(location[0]);
+              final lat = double.tryParse(location[1]);
+              if (!_validCoordinate(lat, lng)) continue;
+              final point = LatLng(lat!, lng!);
+              // 同名分店有不同坐标，不能只按名称去重，否则用户无法区分。
+              if (places.any((p) => p.name == name && p.gcj == point)) continue;
+              places.add(
+                Place(
+                  name: name,
+                  gcj: point,
+                  address: [
+                    _firstString(tip['district']),
+                    _firstString(tip['address']),
+                  ].where((part) => part.isNotEmpty).join(' · '),
+                  source: PlaceSource.amap,
+                ),
+              );
+              if (places.length >= 8) break;
             }
-            if (names.isNotEmpty) return names;
           }
+          if (places.isNotEmpty) return _withDistance(places, anchor);
         }
       } catch (_) {
-        // 联想失败不影响正常搜索
+        // 无坐标的联想和失败的接口仍走完整搜索降级，不再展示需要二次选择的纯名称。
       }
     }
 
-    final names = <String>[];
-    {
-      // 城市未知时 cid=0，接口仍会返回全国范围内的联想
-      final cityId = _baiduCityId ?? 0;
-      try {
-        final uri = Uri.https('map.baidu.com', '/su', {
-          'wd': keyword,
-          'cid': '$cityId',
-          'type': '0',
-          'pc_ver': '2',
-          'ie': 'utf-8',
-        });
-        final body = await _getText(
-          uri,
-          headers: const {
-            'User-Agent': _ua,
-            'Referer': 'https://map.baidu.com/',
-          },
-        );
-        if (body.trimLeft().startsWith('{')) {
-          final json = jsonDecode(body);
-          final raw = json is Map ? json['s'] : null;
-          if (raw is List) {
-            for (final item in raw) {
-              if (item is! String) continue;
-              // 格式：省$市$区$名称$cid$uid$，名称在第 4 段
-              final parts = item.split(r'$');
-              final name = (parts.length > 3 ? parts[3] : parts.first).trim();
-              if (name.isEmpty || RegExp(r'^\d+$').hasMatch(name)) continue;
-              if (names.contains(name)) continue;
-              names.add(name);
-              if (names.length >= 10) break;
-            }
-          }
-        }
-      } catch (_) {
-        // 继续走搜索兜底
-      }
-    }
-    if (names.isNotEmpty) return names;
-
-    // 没有城市 ID 时，用一次小规模搜索的 POI 名称作为联想
-    try {
-      final places = await _searchBaidu(
-        keyword,
-        center ?? const LatLng(39.9087, 116.3975),
-        limit: 8,
-      );
-      return places.map((p) => p.name).toSet().take(8).toList();
-    } catch (_) {
-      return const [];
-    }
+    final outcome = await search(keyword, center: anchor);
+    return outcome.places.take(8).toList(growable: false);
   }
+
+  /// 过滤外部搜索源的非法坐标，避免 NaN、无穷值或占位点进入地图。
+  static bool _validCoordinate(double? lat, double? lng) =>
+      lat != null &&
+      lng != null &&
+      lat.isFinite &&
+      lng.isFinite &&
+      lat.abs() <= 90 &&
+      lng.abs() <= 180 &&
+      (lat != 0 || lng != 0);
 
   Future<List<Place>> _searchAmap(String keyword, LatLng center) async {
     final uri = Uri.https('restapi.amap.com', '/v3/place/text', {
@@ -248,12 +229,12 @@ class SearchApi {
       if (name.isEmpty || parts.length != 2) continue;
       final lng = double.tryParse(parts[0]);
       final lat = double.tryParse(parts[1]);
-      if (lng == null || lat == null || (lng == 0 && lat == 0)) continue;
+      if (!_validCoordinate(lat, lng)) continue;
       final address = _firstString(raw['address']);
       places.add(
         Place(
           name: name,
-          gcj: LatLng(lat, lng),
+          gcj: LatLng(lat!, lng!),
           address: address,
           category: _firstString(raw['type']).split(';').last,
           source: PlaceSource.amap,
@@ -293,7 +274,7 @@ class SearchApi {
     }
     final json = jsonDecode(body);
     if (json is! Map) throw Exception('返回格式异常');
-    // 记录城市 ID，供后续联想接口使用
+    // 记录城市 ID，供后续搜索和输入联想复用
     final city = json['current_city'];
     if (city is Map && city['code'] is num) {
       _baiduCityId = (city['code'] as num).toInt();
@@ -317,7 +298,7 @@ class SearchApi {
       final my = y.abs() > 1e8 ? y / 100 : y;
       if (mx.abs() < 1000 || my.abs() < 1000) continue;
       final gcj = Coord.bd09McToGcj(mx, my);
-      if (gcj.latitude.abs() > 90 || gcj.longitude.abs() > 180) continue;
+      if (!_validCoordinate(gcj.latitude, gcj.longitude)) continue;
       final area = [
         '${raw['city_name'] ?? ''}',
         '${raw['area_name'] ?? ''}',
@@ -357,7 +338,7 @@ class SearchApi {
       if (coords is! List || coords.length < 2) continue;
       final lng = _asDouble(coords[0]);
       final lat = _asDouble(coords[1]);
-      if (lng == null || lat == null) continue;
+      if (!_validCoordinate(lat, lng)) continue;
       final name = '${pr['name'] ?? ''}'.trim();
       final address = [
         pr['street'],
@@ -369,7 +350,7 @@ class SearchApi {
       places.add(
         Place(
           name: name.isEmpty ? address : name,
-          gcj: Coord.wgsToGcj(LatLng(lat, lng)),
+          gcj: Coord.wgsToGcj(LatLng(lat!, lng!)),
           address: address,
           category: '${pr['osm_value'] ?? ''}',
           source: PlaceSource.osm,
@@ -448,7 +429,7 @@ class SearchApi {
         .get(uri, headers: headers ?? const {'User-Agent': _ua})
         .timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
-      throw Exception('HTTP ${response.statusCode}');
+      throw Exception('服务请求失败（状态码 ${response.statusCode}）');
     }
     return utf8.decode(response.bodyBytes, allowMalformed: true);
   }
@@ -476,38 +457,46 @@ class SearchApi {
 
   static String _friendly(Object error) {
     final text = error.toString();
-    if (text.contains('TimeoutException')) return '请求超时';
-    if (text.contains('SocketException')) return '网络不可用';
-    return text.startsWith('Exception: ') ? text.substring(11) : text;
+    if (error is TimeoutException) return '请求超时，请稍后重试';
+    if (error is FormatException) return '搜索服务返回的数据格式异常';
+    if (error is http.ClientException || text.contains('SocketException')) {
+      return '网络请求失败，请检查网络连接';
+    }
+    final message = text.replaceFirst(RegExp(r'^Exception:\s*'), '');
+    // 仅回显应用自身的中文原因，底层英文异常和服务端错误码不直接呈现给用户。
+    if (RegExp(r'[\u4e00-\u9fff]').hasMatch(message) &&
+        !RegExp(r'[A-Za-z]').hasMatch(message)) {
+      return message;
+    }
+    return '搜索服务暂不可用，请稍后重试';
   }
 
   static String _amapError(String info) => switch (info) {
-    'INVALID_USER_KEY' || 'INVALID_USER_SCODE' => '高德 Key 无效，请在设置中重新填写',
-    'INVALID_USER_DOMAIN' => '高德 Key 的平台类型需选择“Web 服务”',
-    'DAILY_QUERY_OVER_LIMIT' || 'ACCESS_TOO_FREQUENT' => '高德 Key 今日额度已用完',
+    'INVALID_USER_KEY' || 'INVALID_USER_SCODE' => '高德密钥无效，请在设置中重新填写',
+    'INVALID_USER_DOMAIN' => '高德密钥类型不匹配，请选择网页接口服务',
+    'DAILY_QUERY_OVER_LIMIT' || 'ACCESS_TOO_FREQUENT' => '高德密钥今日额度已用完',
     'SERVICE_NOT_AVAILABLE' => '高德服务不可用',
-    _ => '高德返回错误（$info）',
+    _ => '高德服务返回异常，请检查密钥与调用额度',
   };
 }
 
-/// 解析“坐标输入”：支持 `29.75,106.58`、`gcj:29.75,106.58`、`wgs:…`、`bd:…`。
-/// 不带前缀时按 WGS-84 解释（与系统 GPS 一致）。
+/// 搜索框与坐标面板共用坐标解析，支持 geo URI 及带明确坐标的地图地点链接。
+/// 普通地点名称仍走搜索，不能把门牌号、年份等数字误当作经纬度。
 LatLng? parseCoordinateQuery(String input) {
-  final text = input.trim().replaceAll('，', ',');
-  final match = RegExp(
-    r'^(wgs|wgs84|gcj|gcj02|bd|bd09)?\s*[:：]?\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)$',
-    caseSensitive: false,
-  ).firstMatch(text);
-  if (match == null) return null;
-  final lat = double.tryParse(match.group(2)!);
-  final lng = double.tryParse(match.group(3)!);
-  if (lat == null || lng == null) return null;
-  if (lat.abs() > 90 || lng.abs() > 180) return null;
-  final kind = (match.group(1) ?? 'wgs').toLowerCase();
-  final raw = LatLng(lat, lng);
-  return switch (kind) {
-    'gcj' || 'gcj02' => raw,
-    'bd' || 'bd09' => Coord.bd09ToGcj(raw),
-    _ => Coord.wgsToGcj(raw),
-  };
+  final text = input.trim();
+  if (CoordinateInput.containsLink(text) || CoordinateInput.isGeoLink(text)) {
+    return CoordinateInput.parse(text)?.gcj;
+  }
+  final coordinate = text.replaceFirst(
+    RegExp(
+      r'^(wgs-?84|wgs|gcj-?02|gcj|bd-?09|bd|百度|高德|gps)\s*[:：]\s*',
+      caseSensitive: false,
+    ),
+    '',
+  );
+  if (!RegExp(r'''^[+\-\d\s.,，;；°º度分秒:'"′’″”NSEWnsew北南东西]+$''')
+      .hasMatch(coordinate)) {
+    return null;
+  }
+  return CoordinateInput.parse(text)?.gcj;
 }

@@ -189,7 +189,7 @@ class FloatingControl(private val context: Context) {
             !MockLocationService.running -> "模拟已停止"
             RouteEngine.active && RouteEngine.paused -> "路线已暂停"
             RouteEngine.active -> String.format(
-                "%.1f m/s · %d%%",
+                "%.1f 米/秒 · %d%%",
                 RouteEngine.speed,
                 (RouteEngine.progress() * 100).toInt(),
             )

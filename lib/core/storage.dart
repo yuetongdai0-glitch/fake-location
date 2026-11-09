@@ -7,7 +7,7 @@ import 'coord.dart';
 import 'models.dart';
 
 /// 本地持久化：配置、常用地点、最近模拟记录。
-/// 全部走 SharedPreferences，卸载应用才会丢失。
+/// 全部走 SharedPreferences；逐项确认写入结果，不提供跨项原子事务。
 class AppStorage {
   AppStorage._(this._prefs);
 
@@ -45,7 +45,9 @@ class AppStorage {
           orElse: () => CoordSystem.gcj,
         );
       }
-      if (map['showRadius'] is bool) config.showRadius = map['showRadius'] as bool;
+      if (map['showRadius'] is bool) {
+        config.showRadius = map['showRadius'] as bool;
+      }
       if (map['writeGcj'] is bool) config.writeGcj = map['writeGcj'] as bool;
       if (map['radiusMeters'] is num) {
         config.radiusMeters = (map['radiusMeters'] as num).toDouble();
@@ -55,11 +57,13 @@ class AppStorage {
       if (lat is num && lng is num && lat.abs() <= 90 && lng.abs() <= 180) {
         config.lastTarget = LatLng(lat.toDouble(), lng.toDouble());
       }
-      if (map['lastName'] is String) config.lastName = map['lastName'] as String;
+      if (map['lastName'] is String) {
+        config.lastName = map['lastName'] as String;
+      }
       if (map['lastAddress'] is String) {
         config.lastAddress = map['lastAddress'] as String;
       }
-      if (map['intervalMs'] is num) {
+      if (map['intervalMs'] is num && (map['intervalMs'] as num).isFinite) {
         config.intervalMs = (map['intervalMs'] as num).toInt().clamp(50, 5000);
       }
       if (map['accuracyMeters'] is num) {
@@ -83,31 +87,36 @@ class AppStorage {
     } catch (_) {
       // 配置损坏时回落到默认值，不阻断启动。
     }
+    config.normalize();
     return config;
   }
 
   Future<void> writeConfig(AppConfig config) async {
-    await _prefs.setString(
-      _kConfig,
-      jsonEncode(<String, Object?>{
-        'amapKey': config.amapKey,
-        'mapStyle': config.mapStyle.name,
-        'coordSystem': config.coordSystem.name,
-        'showRadius': config.showRadius,
-        'writeGcj': config.writeGcj,
-        'radiusMeters': config.radiusMeters,
-        'lastLat': config.lastTarget?.latitude,
-        'lastLng': config.lastTarget?.longitude,
-        'lastName': config.lastName,
-        'lastAddress': config.lastAddress,
-        'intervalMs': config.intervalMs,
-        'accuracyMeters': config.accuracyMeters,
-        'floatBar': config.floatBar,
-        'motion': config.motion.name,
-        'stepFreq': config.stepFreq,
-        'stepLength': config.stepLength,
-        'lastRoute': config.lastRoute?.toJson(),
-      }),
+    config.normalize();
+    await _persist(
+      () => _prefs.setString(
+        _kConfig,
+        jsonEncode(<String, Object?>{
+          'amapKey': config.amapKey,
+          'mapStyle': config.mapStyle.name,
+          'coordSystem': config.coordSystem.name,
+          'showRadius': config.showRadius,
+          'writeGcj': config.writeGcj,
+          'radiusMeters': config.radiusMeters,
+          'lastLat': config.lastTarget?.latitude,
+          'lastLng': config.lastTarget?.longitude,
+          'lastName': config.lastName,
+          'lastAddress': config.lastAddress,
+          'intervalMs': config.intervalMs,
+          'accuracyMeters': config.accuracyMeters,
+          'floatBar': config.floatBar,
+          'motion': config.motion.name,
+          'stepFreq': config.stepFreq,
+          'stepLength': config.stepLength,
+          'lastRoute': config.lastRoute?.toJson(),
+        }),
+      ),
+      '保存配置失败，请重试',
     );
   }
 
@@ -122,8 +131,8 @@ class AppStorage {
     final list = readRecents();
     // 同一坐标 30 米内视为同一地点，避免刷屏。
     list.removeWhere(
-      (e) => Coord.distanceMeters(e.gcj, place.gcj) < 30 &&
-          e.name == place.name,
+      (e) =>
+          Coord.distanceMeters(e.gcj, place.gcj) < 30 && e.name == place.name,
     );
     list.insert(
       0,
@@ -139,7 +148,14 @@ class AppStorage {
     await _writePlaces(_kRecents, list);
   }
 
-  Future<void> clearRecents() => _prefs.remove(_kRecents);
+  /// 删除单条最近记录，确保再次进入或重开应用时不会从本地缓存复活。
+  Future<void> removeRecent(String id) => _writePlaces(
+    _kRecents,
+    readRecents().where((place) => place.id != id).toList(),
+  );
+
+  Future<void> clearRecents() =>
+      _persist(() => _prefs.remove(_kRecents), '清空最近记录失败，请重试');
 
   List<RoutePlan> readRoutes() {
     final raw = _prefs.getString(_kRoutes);
@@ -154,9 +170,12 @@ class AppStorage {
   }
 
   Future<void> writeRoutes(List<RoutePlan> routes) async {
-    await _prefs.setString(
-      _kRoutes,
-      jsonEncode(routes.map((e) => e.toJson()).toList()),
+    await _persist(
+      () => _prefs.setString(
+        _kRoutes,
+        jsonEncode(routes.map((e) => e.toJson()).toList()),
+      ),
+      '保存路线失败，请重试',
     );
   }
 
@@ -176,9 +195,31 @@ class AppStorage {
   }
 
   Future<void> _writePlaces(String key, List<SavedPlace> places) async {
-    await _prefs.setString(
-      key,
-      jsonEncode(places.map((e) => e.toJson()).toList()),
+    await _persist(
+      () => _prefs.setString(
+        key,
+        jsonEncode(places.map((e) => e.toJson()).toList()),
+      ),
+      '保存地点失败，请重试',
     );
+  }
+
+  Future<void> _persist(
+    Future<bool> Function() operation,
+    String failureMessage,
+  ) async {
+    try {
+      if (await operation()) return;
+    } catch (_) {
+      // 平台错误与 false 同样属于保存失败，不让底层英文错误直接进入提示。
+    }
+    // 插件在落盘前已修改内存缓存；失败后尽力读取平台状态，避免读到假成功值。
+    // reload 不是磁盘回滚；若读取也失败，仍须向上层报告，不能宣称已恢复。
+    try {
+      await _prefs.reload();
+    } catch (_) {
+      // 保留原保存失败原因，由调用方按自己的快照执行恢复并报告结果。
+    }
+    throw FormatException(failureMessage);
   }
 }

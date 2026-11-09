@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'ui/home_page.dart';
 
@@ -7,6 +8,7 @@ export 'core/coord.dart';
 export 'core/coordinate_input.dart';
 export 'core/models.dart';
 export 'core/search_api.dart';
+export 'core/user_message.dart';
 
 void main() => runApp(const FakeLocationApp());
 
@@ -26,6 +28,14 @@ class FakeLocationApp extends StatelessWidget {
         );
     return MaterialApp(
       title: '虚拟定位',
+      // 产品统一使用简体中文，系统为英文时也保持复制、粘贴和弹层提示为中文。
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,

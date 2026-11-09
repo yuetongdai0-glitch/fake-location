@@ -28,7 +28,7 @@ class AppUpdate {
   /// 清单只接受 GitHub HTTPS 地址和完整 SHA-256，避免把未知来源的包交给安装器。
   factory AppUpdate.fromJson(Map<String, dynamic> json) {
     final androidValue = json['android'];
-    if (androidValue is! Map) throw const FormatException('更新清单缺少 android 段');
+    if (androidValue is! Map) throw const FormatException('更新清单缺少安卓版本信息');
     final android = Map<String, dynamic>.from(androidValue);
     final appId = json['appId'];
     final versionName = android['versionName'];
@@ -59,7 +59,7 @@ class AppUpdate {
         (host != 'raw.githubusercontent.com' &&
             host != 'github.com' &&
             !host.endsWith('.github.io'))) {
-      throw const FormatException('安装包地址必须来自受信任的 GitHub HTTPS 域名');
+      throw const FormatException('安装包地址必须使用受信任发布站点的加密链接');
     }
 
     return AppUpdate(
@@ -87,7 +87,7 @@ Future<AppUpdate> fetchLatestUpdate() async {
       )
       .timeout(const Duration(seconds: 15));
   if (response.statusCode != 200) {
-    throw Exception('检查更新失败：HTTP ${response.statusCode}');
+    throw Exception('检查更新失败：服务器返回状态码 ${response.statusCode}');
   }
   final decoded = jsonDecode(utf8.decode(response.bodyBytes));
   if (decoded is! Map) throw const FormatException('更新清单格式无效');

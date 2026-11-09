@@ -14,9 +14,13 @@ import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.app.AppOpsManager
+import android.app.ActivityManager
 import android.os.Build
+import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -24,7 +28,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -55,11 +58,34 @@ class MainActivity : FlutterActivity() {
         "showing" to floating.isShowing,
     )
 
+    /** 仅诊断后台限制，不请求自动电池豁免或读取其它应用的通知。 */
+    private fun powerStatus(): Map<String, Any?> {
+        val power = getSystemService(POWER_SERVICE) as? PowerManager
+        val activity = getSystemService(ACTIVITY_SERVICE) as? ActivityManager
+        return PowerDiagnostics.snapshot(
+            Build.VERSION.SDK_INT,
+            ignoringBatteryOptimizations = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    power?.isIgnoringBatteryOptimizations(packageName)
+                } else null
+            },
+            powerSaveMode = { power?.isPowerSaveMode },
+            backgroundRestricted = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    activity?.isBackgroundRestricted
+                } else null
+            },
+            reportFailure = { name, failure ->
+                Log.w("FakeLocation", "读取后台状态失败：$name", failure)
+            },
+        )
+    }
+
     /**
      * WiFi / 网络定位的干扰情况。
      *
-     * 高德、微信这类应用会用自己的 SDK 做 WiFi 指纹定位，刷新时重新算一遍，
-     * 结果盖掉系统里的模拟位置。关掉 WiFi（或关闭“WiFi 扫描”）后它们就只能读系统位置。
+     * WiFi 开启只代表应用可能通过热点信息独立计算位置，不代表系统模拟必然失败。
+     * 关闭 WiFi 后仍可能存在基站、IP 或应用缓存定位，需要结合逐源读回结果判断。
      */
     private fun wifiStatus(): Map<String, Any?> {
         var enabled = false
@@ -95,198 +121,241 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fake_location/mock")
             .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "requestPermissions" -> {
-                        val perms = mutableListOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                        )
-                        // Android 13+ 前台服务通知需要通知权限，否则通知不显示（服务仍可运行）
-                        if (Build.VERSION.SDK_INT >= 33) perms.add(Manifest.permission.POST_NOTIFICATIONS)
-                        val missing = perms.filter {
-                            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                try {
+                    when (call.method) {
+                        "requestPermissions" -> {
+                            val perms = mutableListOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION
+                            )
+                            // Android 13+ 前台服务通知需要通知权限，否则通知不显示（服务仍可运行）
+                            if (Build.VERSION.SDK_INT >= 33) perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                            val missing = perms.filter {
+                                checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                            }
+                            if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 1)
+                            result.success(null)
                         }
-                        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 1)
-                        result.success(null)
-                    }
-                    "isMockApp" -> result.success(isSelectedMockApp())
-                    "openDevSettings" -> {
-                        try {
-                            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
-                        } catch (e: Exception) {
-                            startActivity(Intent(Settings.ACTION_SETTINGS))
+                        "isMockApp" -> result.success(isSelectedMockApp())
+                        "openDevSettings" -> {
+                            try {
+                                startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                            } catch (e: Exception) {
+                                startActivity(Intent(Settings.ACTION_SETTINGS))
+                            }
+                            result.success(null)
                         }
-                        result.success(null)
-                    }
-                    "openLocationSettings" -> {
-                        try {
-                            startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                        } catch (e: Exception) {
-                            startActivity(Intent(Settings.ACTION_SETTINGS))
+                        "openLocationSettings" -> {
+                            try {
+                                startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                            } catch (e: Exception) {
+                                startActivity(Intent(Settings.ACTION_SETTINGS))
+                            }
+                            result.success(null)
                         }
-                        result.success(null)
-                    }
-                    "openUrl" -> {
-                        val url = call.argument<String>("url")
-                        if (url == null || !url.startsWith("https://")) {
-                            result.error("BAD_URL", "只允许打开 https 链接", null)
-                            return@setMethodCallHandler
+                        "openUrl" -> {
+                            val url = call.argument<String>("url")
+                            if (url == null || !url.startsWith("https://")) {
+                                result.error("BAD_URL", "只允许打开安全网页链接", null)
+                                return@setMethodCallHandler
+                            }
+                            try {
+                                startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                                result.success(true)
+                            } catch (e: Exception) {
+                                result.error("NO_BROWSER", "没有可用的浏览器", null)
+                            }
                         }
-                        try {
-                            startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        "start" -> {
+                            val lat = call.argument<Double>("lat")
+                            val lng = call.argument<Double>("lng")
+                            val manualSpeed = call.argument<Double>("manualSpeed") ?: 0.0
+                            val manualBearing = call.argument<Double>("manualBearing") ?: 0.0
+                            if (!manualSpeed.isFinite() || manualSpeed !in 0.0..300.0 || !manualBearing.isFinite()) {
+                                result.error("BAD_ARGS", "摇杆速度或方向无效", null)
+                                return@setMethodCallHandler
+                            }
+                            // 边界校验：坐标必须在合法经纬度范围内
+                            if (lat == null || lng == null || lat !in -90.0..90.0 || lng !in -180.0..180.0) {
+                                result.error("BAD_ARGS", "坐标非法", null)
+                                return@setMethodCallHandler
+                            }
+                            if (!isSelectedMockApp()) {
+                                result.error("NOT_MOCK_APP", "请先在开发者选项中把本应用设为模拟位置信息应用", null)
+                                return@setMethodCallHandler
+                            }
+                            val intent = Intent(this, MockLocationService::class.java)
+                                .putExtra("lat", lat).putExtra("lng", lng)
+                                .putExtra("manualSpeed", manualSpeed)
+                                .putExtra("manualBearing", ((manualBearing % 360.0) + 360.0) % 360.0)
+                            applyPushSettings(intent, call)
+                            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+                            result.success(true)
+                        }
+                        // 路线模拟：点序列 + 速度 + 播放方式
+                        "startRoute" -> {
+                            val points = call.argument<List<Double>>("points")
+                            val speed = call.argument<Double>("speed") ?: 1.4
+                            val mode = call.argument<String>("mode") ?: RouteEngine.MODE_LOOP
+                            if (points == null || points.size < 4 || points.size % 2 != 0) {
+                                result.error("BAD_ARGS", "路线至少需要两个点", null)
+                                return@setMethodCallHandler
+                            }
+                            if (points.withIndex().any { (index, value) ->
+                                    !value.isFinite() ||
+                                        value !in if (index % 2 == 0) -90.0..90.0 else -180.0..180.0
+                                } || points.chunked(2).distinct().size < 2 ||
+                                !speed.isFinite() || speed < 0.1 || speed > 300 ||
+                                mode !in setOf(RouteEngine.MODE_ONCE, RouteEngine.MODE_LOOP, RouteEngine.MODE_PINGPONG)
+                            ) {
+                                result.error("BAD_ARGS", "路线坐标非法", null)
+                                return@setMethodCallHandler
+                            }
+                            if (!isSelectedMockApp()) {
+                                result.error("NOT_MOCK_APP", "请先在开发者选项中把本应用设为模拟位置信息应用", null)
+                                return@setMethodCallHandler
+                            }
+                            val intent = Intent(this, MockLocationService::class.java)
+                                .putExtra("points", points.toDoubleArray())
+                                .putExtra("speed", speed)
+                                .putExtra("mode", mode)
+                            applyPushSettings(intent, call)
+                            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+                            result.success(true)
+                        }
+                        "pauseMock", "resumeMock", "stopRoute" -> {
+                            val action = when (call.method) {
+                                "pauseMock" -> MockLocationService.ACTION_PAUSE
+                                "resumeMock" -> MockLocationService.ACTION_RESUME
+                                else -> MockLocationService.ACTION_STOP_ROUTE
+                            }
+                            startService(Intent(this, MockLocationService::class.java).setAction(action))
+                            result.success(true)
+                        }
+                        "setSpeed" -> {
+                            val speed = call.argument<Double>("speed")
+                            if (speed == null || !speed.isFinite() || speed < 0.1 || speed > 300) {
+                                result.error("BAD_ARGS", "速度非法", null)
+                                return@setMethodCallHandler
+                            }
+                            startService(
+                                Intent(this, MockLocationService::class.java)
+                                    .setAction(MockLocationService.ACTION_SPEED)
+                                    .putExtra("speed", speed),
                             )
                             result.success(true)
-                        } catch (e: Exception) {
-                            result.error("NO_BROWSER", "没有可用的浏览器", null)
                         }
-                    }
-                    "start" -> {
-                        val lat = call.argument<Double>("lat")
-                        val lng = call.argument<Double>("lng")
-                        // 边界校验：坐标必须在合法经纬度范围内
-                        if (lat == null || lng == null || lat !in -90.0..90.0 || lng !in -180.0..180.0) {
-                            result.error("BAD_ARGS", "坐标非法", null)
-                            return@setMethodCallHandler
-                        }
-                        if (!isSelectedMockApp()) {
-                            result.error("NOT_MOCK_APP", "请先在开发者选项中把本应用设为模拟位置信息应用", null)
-                            return@setMethodCallHandler
-                        }
-                        val intent = Intent(this, MockLocationService::class.java)
-                            .putExtra("lat", lat).putExtra("lng", lng)
-                        applyPushSettings(intent, call)
-                        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-                        result.success(true)
-                    }
-                    // 路线模拟：点序列 + 速度 + 播放方式
-                    "startRoute" -> {
-                        val points = call.argument<List<Double>>("points")
-                        val speed = call.argument<Double>("speed") ?: 1.4
-                        val mode = call.argument<String>("mode") ?: RouteEngine.MODE_LOOP
-                        if (points == null || points.size < 4 || points.size % 2 != 0) {
-                            result.error("BAD_ARGS", "路线至少需要两个点", null)
-                            return@setMethodCallHandler
-                        }
-                        if (points.any { it.isNaN() }) {
-                            result.error("BAD_ARGS", "路线坐标非法", null)
-                            return@setMethodCallHandler
-                        }
-                        if (!isSelectedMockApp()) {
-                            result.error("NOT_MOCK_APP", "请先在开发者选项中把本应用设为模拟位置信息应用", null)
-                            return@setMethodCallHandler
-                        }
-                        val intent = Intent(this, MockLocationService::class.java)
-                            .putExtra("points", points.toDoubleArray())
-                            .putExtra("speed", speed)
-                            .putExtra("mode", mode)
-                        applyPushSettings(intent, call)
-                        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-                        result.success(true)
-                    }
-                    "pauseMock", "resumeMock", "stopRoute" -> {
-                        val action = when (call.method) {
-                            "pauseMock" -> MockLocationService.ACTION_PAUSE
-                            "resumeMock" -> MockLocationService.ACTION_RESUME
-                            else -> MockLocationService.ACTION_STOP_ROUTE
-                        }
-                        startService(Intent(this, MockLocationService::class.java).setAction(action))
-                        result.success(true)
-                    }
-                    "setSpeed" -> {
-                        val speed = call.argument<Double>("speed")
-                        if (speed == null || speed <= 0) {
-                            result.error("BAD_ARGS", "速度非法", null)
-                            return@setMethodCallHandler
-                        }
-                        startService(
-                            Intent(this, MockLocationService::class.java)
-                                .setAction(MockLocationService.ACTION_SPEED)
-                                .putExtra("speed", speed),
-                        )
-                        result.success(true)
-                    }
-                    "overlayStatus" -> result.success(overlayStatus())
-                    "wifiStatus" -> result.success(wifiStatus())
-                    "openWifiSettings" -> {
-                        try {
-                            startActivity(
-                                Intent(Settings.ACTION_WIFI_SETTINGS)
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        } catch (_: Exception) {
-                        }
-                        result.success(null)
-                    }
-                    "openOverlaySettings" -> {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        "overlayStatus" -> result.success(overlayStatus())
+                        "wifiStatus" -> result.success(wifiStatus())
+                        "powerStatus" -> result.success(powerStatus())
+                        "openAppSettings" -> {
                             try {
                                 startActivity(
                                     Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                         Uri.parse("package:$packageName"),
-                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    ),
+                                )
+                                result.success(null)
+                            } catch (failure: Exception) {
+                                Log.w("FakeLocation", "打开应用设置失败", failure)
+                                result.error("SETTINGS_UNAVAILABLE", NativeErrorMessages.describe("打开应用设置失败", failure), null)
+                            }
+                        }
+                        "openWifiSettings" -> {
+                            try {
+                                startActivity(
+                                    Intent(Settings.ACTION_WIFI_SETTINGS)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                 )
                             } catch (_: Exception) {
                             }
+                            result.success(null)
                         }
-                        result.success(null)
-                    }
-                    "showFloat" -> result.success(floating.show())
-                    "hideFloat" -> {
-                        floating.hide()
-                        result.success(true)
-                    }
-                    "stop" -> {
-                        floating.hide()
-                        stopService(Intent(this, MockLocationService::class.java))
-                        result.success(true)
-                    }
-                    "isRunning" -> result.success(MockLocationService.running)
-                    "mockStatus" -> {
-                        val now = System.currentTimeMillis()
-                        result.success(
-                            mapOf(
-                                "running" to MockLocationService.running,
-                                "pushCount" to MockLocationService.pushCount,
-                                "lastPushAt" to MockLocationService.lastPushAt,
-                                "lat" to MockLocationService.currentLat,
-                                "lng" to MockLocationService.currentLng,
-                                "providers" to MockLocationService.activeProviders.toList(),
-                                "mockApp" to isSelectedMockApp(),
-                                "elapsedMs" to if (MockLocationService.lastPushAt == 0L) -1L
-                                else now - MockLocationService.lastPushAt,
-                                "routeActive" to RouteEngine.active,
-                                "routePaused" to RouteEngine.paused,
-                                "routeProgress" to RouteEngine.progress(),
-                                "routeTravelled" to RouteEngine.travelled,
-                                "routeTotal" to RouteEngine.total,
-                                "routeSpeed" to RouteEngine.speed,
-                                "routeBearing" to RouteEngine.bearing.toDouble(),
-                                "intervalMs" to MockLocationService.intervalMs,
-                                "floatShowing" to floating.isShowing,
-                                "overlayGranted" to floating.canShow(),
-                            ),
+                        "openOverlaySettings" -> {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                try {
+                                    startActivity(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:$packageName"),
+                                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                } catch (_: Exception) {
+                                }
+                            }
+                            result.success(null)
+                        }
+                        "showFloat" -> result.success(floating.show())
+                        "hideFloat" -> {
+                            floating.hide()
+                            result.success(true)
+                        }
+                        "stop" -> {
+                            floating.hide()
+                            stopService(Intent(this, MockLocationService::class.java))
+                            result.success(true)
+                        }
+                        "isRunning" -> result.success(MockLocationService.serviceActive)
+                        "mockStatus" -> {
+                            val now = SystemClock.elapsedRealtime()
+                            result.success(
+                                mapOf(
+                                    "running" to MockLocationService.running,
+                                    "serviceActive" to MockLocationService.serviceActive,
+                                    "pushCount" to MockLocationService.pushCount,
+                                    "lastPushAt" to MockLocationService.lastPushAt,
+                                    "lat" to MockLocationService.currentLat,
+                                    "lng" to MockLocationService.currentLng,
+                                    "providers" to MockLocationService.activeProviders.toList(),
+                                    "expectedProviders" to MockLocationService.expectedProviders,
+                                    "providerErrors" to MockLocationService.providerErrors,
+                                    "providerLastPushAt" to MockLocationService.providerLastPushAt,
+                                    "providerLocations" to providerLocations(),
+                                    "mockApp" to isSelectedMockApp(),
+                                    "elapsedMs" to if (MockLocationService.lastPushElapsedRealtimeMs == 0L) -1L
+                                    else now - MockLocationService.lastPushElapsedRealtimeMs,
+                                    "routeActive" to RouteEngine.active,
+                                    "routePaused" to RouteEngine.paused,
+                                    "routeProgress" to RouteEngine.progress(),
+                                    "routeTravelled" to RouteEngine.travelled,
+                                    "routeTotal" to RouteEngine.total,
+                                    "routeSpeed" to RouteEngine.speed,
+                                    "routeBearing" to RouteEngine.bearing.toDouble(),
+                                    "intervalMs" to MockLocationService.intervalMs,
+                                    "floatShowing" to floating.isShowing,
+                                    "overlayGranted" to floating.canShow(),
+                                ),
+                            )
+                        }
+                        "openApp" -> {
+                            val pkg = call.argument<String>("package")
+                            if (pkg == null) {
+                                result.error("BAD_ARGS", "缺少包名", null)
+                                return@setMethodCallHandler
+                            }
+                            val intent = packageManager.getLaunchIntentForPackage(pkg)
+                            if (intent == null) {
+                                result.error("NOT_INSTALLED", "未安装该应用", null)
+                                return@setMethodCallHandler
+                            }
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            result.success(true)
+                        }
+                        "getLocation" -> getLocation(
+                            call.argument<Boolean>("fresh") ?: false, result,
+                            call.argument<Boolean>("cachedOnly") ?: false,
+                            call.argument<Boolean>("realOnly") ?: false,
                         )
+                        else -> result.notImplemented()
                     }
-                    "openApp" -> {
-                        val pkg = call.argument<String>("package")
-                        if (pkg == null) {
-                            result.error("BAD_ARGS", "缺少包名", null)
-                            return@setMethodCallHandler
-                        }
-                        val intent = packageManager.getLaunchIntentForPackage(pkg)
-                        if (intent == null) {
-                            result.error("NOT_INSTALLED", "未安装该应用", null)
-                            return@setMethodCallHandler
-                        }
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(intent)
-                        result.success(true)
-                    }
-                    "getLocation" -> getLocation(call.argument<Boolean>("fresh") ?: false, result)
-                    else -> result.notImplemented()
+                } catch (failure: Exception) {
+                    Log.w("FakeLocation", "执行定位操作失败", failure)
+                    result.error("NATIVE_OPERATION_FAILED", NativeErrorMessages.describe("执行定位操作失败", failure), null)
                 }
             }
         configureUpdateChannel(flutterEngine)
@@ -298,54 +367,61 @@ class MainActivity : FlutterActivity() {
     private fun configureUpdateChannel(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fake_location/update")
             .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "version" -> {
-                        val info = packageManager.getPackageInfo(packageName, 0)
-                        result.success(
-                            mapOf(
-                                "versionName" to info.versionName,
-                                "versionCode" to versionCodeOf(info),
-                            ),
-                        )
-                    }
-                    "downloadAndInstall" -> {
-                        val packageId = call.argument<String>("packageId")
-                        val versionCode = call.argument<Int>("versionCode")
-                        val apkUrl = call.argument<String>("apkUrl")
-                        val sha256 = call.argument<String>("sha256")
-                        val minimumSdk = call.argument<Int>("minSdk") ?: 1
-                        if (packageId != packageName ||
-                            versionCode == null || versionCode < 1 ||
-                            apkUrl == null || !isTrustedUpdateUrl(apkUrl) ||
-                            sha256 == null || !sha256.matches(Regex("^[0-9a-fA-F]{64}$")) ||
-                            Build.VERSION.SDK_INT < minimumSdk
-                        ) {
-                            result.error("INVALID_UPDATE", "更新参数或当前系统版本不合法", null)
-                            return@setMethodCallHandler
+                try {
+                    when (call.method) {
+                        "version" -> {
+                            val info = packageManager.getPackageInfo(packageName, 0)
+                            result.success(
+                                mapOf(
+                                    "versionName" to info.versionName,
+                                    "versionCode" to versionCodeOf(info),
+                                ),
+                            )
                         }
-                        updateExecutor.execute {
-                            try {
-                                val apk = downloadAndVerify(packageId, versionCode, apkUrl, sha256)
-                                runOnUiThread {
-                                    try {
-                                        startApkInstall(apk)
-                                        result.success(true)
-                                    } catch (failure: Exception) {
-                                        result.error(
-                                            if (failure is SecurityException) "INSTALL_PERMISSION" else "INSTALL_FAILED",
-                                            failure.message ?: "无法启动系统安装器",
-                                            null,
-                                        )
+                        "downloadAndInstall" -> {
+                            val packageId = call.argument<String>("packageId")
+                            val versionCode = call.argument<Int>("versionCode")
+                            val apkUrl = call.argument<String>("apkUrl")
+                            val sha256 = call.argument<String>("sha256")
+                            val minimumSdk = call.argument<Int>("minSdk") ?: 1
+                            if (packageId != packageName ||
+                                versionCode == null || versionCode < 1 ||
+                                apkUrl == null || !isTrustedUpdateUrl(apkUrl) ||
+                                sha256 == null || !sha256.matches(Regex("^[0-9a-fA-F]{64}$")) ||
+                                Build.VERSION.SDK_INT < minimumSdk
+                            ) {
+                                result.error("INVALID_UPDATE", "更新参数或当前系统版本不合法", null)
+                                return@setMethodCallHandler
+                            }
+                            updateExecutor.execute {
+                                try {
+                                    val apk = downloadAndVerify(packageId, versionCode, apkUrl, sha256)
+                                    runOnUiThread {
+                                        try {
+                                            startApkInstall(apk)
+                                            result.success(true)
+                                        } catch (failure: Exception) {
+                                            Log.w("FakeLocation", "启动安装器失败", failure)
+                                            result.error(
+                                                if (failure is SecurityException) "INSTALL_PERMISSION" else "INSTALL_FAILED",
+                                                NativeErrorMessages.describe("启动安装器失败", failure),
+                                                null,
+                                            )
+                                        }
                                     }
-                                }
-                            } catch (failure: Exception) {
-                                runOnUiThread {
-                                    result.error("UPDATE_FAILED", failure.message ?: "更新失败", null)
+                                } catch (failure: Exception) {
+                                    Log.w("FakeLocation", "下载更新失败", failure)
+                                    runOnUiThread {
+                                        result.error("UPDATE_FAILED", NativeErrorMessages.describe("下载更新失败", failure), null)
+                                    }
                                 }
                             }
                         }
+                        else -> result.notImplemented()
                     }
-                    else -> result.notImplemented()
+                } catch (failure: Exception) {
+                    Log.w("FakeLocation", "执行更新操作失败", failure)
+                    result.error("NATIVE_OPERATION_FAILED", NativeErrorMessages.describe("执行更新操作失败", failure), null)
                 }
             }
     }
@@ -371,10 +447,10 @@ class MainActivity : FlutterActivity() {
         connection.setRequestProperty("User-Agent", "fake-location-app/1.0")
         try {
             if (connection.responseCode !in 200..299) {
-                throw IOException("下载失败：HTTP ${connection.responseCode}")
+                throw AppOperationException("服务器返回状态码 ${connection.responseCode}")
             }
             val declaredBytes = connection.contentLengthLong
-            if (declaredBytes > MAX_UPDATE_BYTES) throw IOException("安装包超过体积上限")
+            if (declaredBytes > MAX_UPDATE_BYTES) throw AppOperationException("安装包超过体积上限")
 
             val digest = MessageDigest.getInstance("SHA-256")
             var received = 0L
@@ -385,16 +461,16 @@ class MainActivity : FlutterActivity() {
                         val count = input.read(buffer)
                         if (count < 0) break
                         received += count
-                        if (received > MAX_UPDATE_BYTES) throw IOException("安装包超过体积上限")
+                        if (received > MAX_UPDATE_BYTES) throw AppOperationException("安装包超过体积上限")
                         digest.update(buffer, 0, count)
                         output.write(buffer, 0, count)
                     }
                     output.fd.sync()
                 }
             }
-            if (received == 0L) throw IOException("下载内容为空")
+            if (received == 0L) throw AppOperationException("下载内容为空")
             if (hex(digest.digest()) != expectedSha256.lowercase()) {
-                throw IOException("安装包 SHA-256 校验失败")
+                throw AppOperationException("安装包完整性校验失败")
             }
         } catch (failure: Exception) {
             apk.delete()
@@ -423,10 +499,10 @@ class MainActivity : FlutterActivity() {
             PackageManager.GET_SIGNATURES
         }
         val candidate = packageManager.getPackageArchiveInfo(apk.absolutePath, flags)
-            ?: throw IOException("无法读取更新包信息")
-        if (candidate.packageName != expectedPackage) throw IOException("更新包包名不一致")
+            ?: throw AppOperationException("无法读取更新包信息")
+        if (candidate.packageName != expectedPackage) throw AppOperationException("更新包包名不一致")
         if (versionCodeOf(candidate) != expectedVersionCode.toLong()) {
-            throw IOException("更新包版本号与清单不一致")
+            throw AppOperationException("更新包版本号与清单不一致")
         }
 
         val installedFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -437,10 +513,10 @@ class MainActivity : FlutterActivity() {
         }
         val installed = packageManager.getPackageInfo(packageName, installedFlags)
         if (versionCodeOf(installed) >= versionCodeOf(candidate)) {
-            throw IOException("更新包版本不高于当前已安装版本")
+            throw AppOperationException("更新包版本不高于当前已安装版本")
         }
         if (signatureHashes(installed) != signatureHashes(candidate)) {
-            throw IOException("更新包签名与应用不一致，已阻止安装")
+            throw AppOperationException("更新包签名与应用不一致，已阻止安装")
         }
     }
 
@@ -455,7 +531,7 @@ class MainActivity : FlutterActivity() {
             )
             settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(settings)
-            throw SecurityException("请先允许“虚拟定位”安装未知来源应用，返回后再次点击更新")
+            throw InstallPermissionException()
         }
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -498,7 +574,7 @@ class MainActivity : FlutterActivity() {
         return signatures.mapTo(mutableSetOf()) { signature ->
             hex(digest.digest(signature.toByteArray()))
         }.also {
-            if (it.isEmpty()) throw IOException("无法读取安装包签名")
+            if (it.isEmpty()) throw AppOperationException("无法读取安装包签名")
         }
     }
 
@@ -542,13 +618,20 @@ class MainActivity : FlutterActivity() {
      * 返回精度、来源 provider 与是否为模拟位置，供界面提示用户。
      */
     @SuppressLint("MissingPermission")
-    private fun getLocation(fresh: Boolean, result: MethodChannel.Result) {
+    private fun getLocation(fresh: Boolean, result: MethodChannel.Result, cachedOnly: Boolean = false, realOnly: Boolean = false) {
         if (!hasLocationPermission()) {
             result.error("NO_PERMISSION", "未授予定位权限", null)
             return
         }
         val lm = getSystemService(LOCATION_SERVICE) as LocationManager
         val enabled = lm.getProviders(true).toSet()
+        val requireReal = realOnly || (fresh && !MockLocationService.serviceActive)
+        fun usable(location: Location): Boolean = LocationFixPolicy.usable(
+            location.latitude, location.longitude,
+            if (location.hasAccuracy()) location.accuracy else Float.NaN,
+            LocationFixPolicy.ageMillis(SystemClock.elapsedRealtimeNanos(), location.elapsedRealtimeNanos),
+            isMockLocation(location), requireReal,
+        )
 
         val cached = enabled.mapNotNull { provider ->
             try {
@@ -556,8 +639,13 @@ class MainActivity : FlutterActivity() {
             } catch (_: Exception) {
                 null
             }
-        }.filter { System.currentTimeMillis() - it.time < 60_000 }
+        }.filter(::usable)
         val bestCached = cached.minByOrNull { it.accuracy }
+        // 检测面板只读近期快照，不额外请求定位或等待二十秒后才展示后台限制。
+        if (cachedOnly) {
+            result.success(bestCached?.let(::payload))
+            return
+        }
 
         // 缓存足够准（30 米内）时直接返回，避免每次定位都要等 GPS；
         // fresh 为真时跳过缓存（停止模拟后需要马上拿到真实位置）
@@ -567,7 +655,8 @@ class MainActivity : FlutterActivity() {
         }
 
         val handler = Handler(Looper.getMainLooper())
-        var best: Location? = bestCached
+        // fresh 用于停止模拟后的真实定位，旧 mock 缓存精度再高也不能压住新回调。
+        var best: Location? = if (fresh) null else bestCached
         var finished = false
         lateinit var listener: LocationListener
 
@@ -584,9 +673,14 @@ class MainActivity : FlutterActivity() {
         }
 
         listener = LocationListener { loc ->
-            if (best == null || loc.accuracy < best!!.accuracy) best = loc
-            // 精度足够就提前结束，不必等满 20 秒
-            if (loc.accuracy <= 20f) finish()
+            if (usable(loc)) {
+                if (best == null || loc.accuracy < best!!.accuracy) best = loc
+                // 足够精确的新回调优先于旧缓存，避免提前结束时反而返回旧位置。
+                if (loc.accuracy <= 20f) {
+                    best = loc
+                    finish()
+                }
+            }
         }
 
         val providers = buildList {
@@ -601,14 +695,16 @@ class MainActivity : FlutterActivity() {
             finish()
             return
         }
+        var requests = 0
         for (provider in providers) {
             try {
                 lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+                requests++
             } catch (_: Exception) {
                 // 个别 ROM 对 provider 有限制，失败时继续用其它 provider 与缓存
             }
         }
-        handler.postDelayed({ finish() }, 20_000)
+        if (requests == 0) finish() else handler.postDelayed({ finish() }, 20_000)
     }
 
     /** 是否有任一档定位权限。 */
@@ -616,21 +712,50 @@ class MainActivity : FlutterActivity() {
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    /** 把 Location 转成 Flutter 侧可读的字段，附带精度与模拟标记。 */
-    private fun payload(loc: Location): Map<String, Any> {
-        val mock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            loc.isMock
-        } else {
+    /** 分别读回各系统定位源；一个源的成功不能证明其它应用使用的源也已生效。 */
+    @SuppressLint("MissingPermission")
+    private fun providerLocations(): List<Map<String, Any?>> {
+        val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        return MockLocationService.expectedProviders.map { provider ->
+            try {
+                if (!hasLocationPermission()) throw SecurityException("未授予定位权限")
+                val location = lm.getLastKnownLocation(provider)
+                if (location == null) {
+                    mapOf("provider" to provider, "error" to "尚无定位缓存")
+                } else {
+                    payload(location) + mapOf(
+                        "provider" to provider,
+                        "ageMs" to LocationFixPolicy.ageMillis(
+                            SystemClock.elapsedRealtimeNanos(), location.elapsedRealtimeNanos,
+                        ),
+                        "error" to null,
+                    )
+                }
+            } catch (failure: Exception) {
+                Log.w("FakeLocation", "读取定位源失败：$provider", failure)
+                mapOf("provider" to provider, "error" to NativeErrorMessages.describe("读取定位源失败", failure))
+            }
+        }
+    }
+
+    /** 兼容不同系统版本读取模拟标记，不把过时回调误当成恢复的真实定位。 */
+    private fun isMockLocation(loc: Location): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) loc.isMock else {
             @Suppress("DEPRECATION")
             loc.isFromMockProvider
         }
+
+    /** 把 Location 转成 Flutter 可读字段，年龄统一用单调时钟。 */
+    private fun payload(loc: Location): Map<String, Any> {
         return mapOf(
             "lat" to loc.latitude,
             "lng" to loc.longitude,
             "accuracy" to loc.accuracy.toDouble(),
             "provider" to (loc.provider ?: ""),
-            "mock" to mock,
-            "age" to ((System.currentTimeMillis() - loc.time) / 1000).coerceAtLeast(0L),
+            "mock" to isMockLocation(loc),
+            "age" to LocationFixPolicy.ageMillis(
+                SystemClock.elapsedRealtimeNanos(), loc.elapsedRealtimeNanos,
+            ).let { if (it < 0) -1L else it / 1000 },
         )
     }
 

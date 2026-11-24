@@ -18,6 +18,7 @@ import '../core/joystick_motion.dart';
 import 'coordinate_sheet.dart';
 import 'route_page.dart';
 import 'sheets.dart';
+import 'style.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -56,6 +57,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _mapReady = false;
 
   List<Place> _results = const [];
+
+  /// 底部面板实际高度，地图控件、比例尺和摇杆据此避让。
+  double _panelHeight = 300;
+  final GlobalKey _panelKey = GlobalKey();
   String? _searchHint;
 
   List<SavedPlace> _favorites = const [];
@@ -1200,15 +1205,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Container(
-              padding: const EdgeInsets.fromLTRB(20, 26, 20, 24),
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [scheme.primary, const Color(0xFF14A18C)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
+                gradient: AppColors.nightGradient,
                 borderRadius: const BorderRadius.only(
-                  bottomRight: Radius.circular(26),
+                  bottomRight: Radius.circular(32),
                 ),
               ),
               child: Column(
@@ -1217,25 +1218,33 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   Row(
                     children: [
                       // 与桌面图标共用品牌资产，避免应用内外使用不同的定位标识。
-                      Image.asset(
-                        'assets/branding/app-icon.png',
-                        width: 42,
-                        height: 42,
-                        semanticLabel: '虚拟定位标志',
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.asset(
+                          'assets/branding/app-icon.png',
+                          width: 44,
+                          height: 44,
+                          semanticLabel: '虚拟定位标志',
+                        ),
                       ),
                       const SizedBox(width: 12),
                       const Text(
                         '虚拟定位',
                         style: TextStyle(
                           color: Colors.white,
-                          fontSize: 19,
-                          fontWeight: FontWeight.w600,
+                          fontSize: 21,
+                          fontWeight: FontWeight.w700,
                           letterSpacing: 0.3,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 10),
+                  const Text(
+                    '免 Root 位置模拟 · 路线与摇杆移动',
+                    style: TextStyle(color: AppColors.glow, fontSize: 12.5),
+                  ),
+                  const SizedBox(height: 12),
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 9,
@@ -1312,7 +1321,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ],
               ),
             ),
-            Divider(height: 1, color: scheme.outlineVariant),
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            const SizedBox(height: 6),
             _drawerItem(
               theme,
               Icons.system_update_alt,
@@ -1333,24 +1343,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     bool selected = false,
     VoidCallback? onTap,
   }) {
-    final scheme = theme.colorScheme;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1),
       child: ListTile(
         dense: true,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        tileColor: selected ? scheme.primary.withValues(alpha: 0.10) : null,
-        leading: Icon(
-          icon,
-          size: 20,
-          color: selected ? scheme.primary : scheme.onSurfaceVariant,
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        tileColor: selected ? AppColors.accentSoft : null,
+        visualDensity: const VisualDensity(vertical: -3),
+        leading: IconTile(icon: icon, size: 30, solid: selected),
         title: Text(
           title,
           style: TextStyle(
-            fontSize: 14,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? scheme.primary : scheme.onSurface,
+            fontSize: 14.5,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? AppColors.accent : AppColors.ink,
           ),
         ),
         onTap: () {
@@ -1457,15 +1463,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       width: 34,
                       height: 34,
                       decoration: BoxDecoration(
-                        color: _running
-                            ? const Color(0xFF17B978)
-                            : scheme.primary,
+                        gradient: _running
+                            ? null
+                            : const LinearGradient(
+                                colors: [AppColors.accent, AppColors.violet],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                        color: _running ? AppColors.success : null,
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 3),
                         boxShadow: const [
                           BoxShadow(
-                            color: Color(0x40000000),
-                            blurRadius: 8,
+                            color: Color(0x554F46E5),
+                            blurRadius: 10,
                             offset: Offset(0, 3),
                           ),
                         ],
@@ -1479,9 +1490,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     Container(
                       width: 2,
                       height: 12,
-                      color:
-                          (_running ? const Color(0xFF17B978) : scheme.primary)
-                              .withValues(alpha: 0.8),
+                      color: (_running ? AppColors.success : AppColors.accent)
+                          .withValues(alpha: 0.8),
                     ),
                   ],
                 ),
@@ -1491,9 +1501,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
         Scalebar(
           alignment: Alignment.bottomLeft,
-          padding: const EdgeInsets.only(left: 12, bottom: 220),
-          textStyle: const TextStyle(fontSize: 11, color: Color(0xFF444444)),
-          lineColor: const Color(0xFF666666),
+          padding: EdgeInsets.only(left: 14, bottom: _panelHeight + 8),
+          textStyle: const TextStyle(fontSize: 11, color: AppColors.body),
+          lineColor: AppColors.muted,
         ),
       ],
     );
@@ -1545,20 +1555,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget _buildSearchBar(ThemeData theme) {
     final scheme = theme.colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
       child: Container(
-        height: 50,
+        height: 54,
         decoration: BoxDecoration(
           color: scheme.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: scheme.outlineVariant),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x14000000),
-              blurRadius: 12,
-              offset: Offset(0, 3),
-            ),
-          ],
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: AppColors.softShadow,
         ),
         child: Row(
           children: [
@@ -1601,10 +1604,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
             IconButton(
               tooltip: '搜索',
-              icon: Icon(
-                Icons.arrow_forward_rounded,
-                size: 20,
-                color: scheme.primary,
+              icon: Container(
+                width: 34,
+                height: 34,
+                decoration: const BoxDecoration(
+                  gradient: AppColors.accentGradient,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.arrow_forward_rounded,
+                  size: 18,
+                  color: Colors.white,
+                ),
               ),
               onPressed: _search,
             ),
@@ -1616,10 +1627,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildHintCard(ThemeData theme) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Material(
         elevation: 3,
-        borderRadius: BorderRadius.circular(14),
+        shadowColor: const Color(0x331E295A),
+        borderRadius: BorderRadius.circular(20),
         color: theme.colorScheme.surface,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -1649,10 +1661,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildResults(ThemeData theme) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       child: Material(
         elevation: 4,
-        borderRadius: BorderRadius.circular(16),
+        shadowColor: const Color(0x331E295A),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
         color: theme.colorScheme.surface,
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 340),
@@ -1660,7 +1674,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             shrinkWrap: true,
             padding: EdgeInsets.zero,
             itemCount: _results.length,
-            separatorBuilder: (_, _) => const Divider(height: 1, indent: 56),
+            separatorBuilder: (_, _) => const Divider(height: 1, indent: 64),
             itemBuilder: (context, index) {
               final place = _results[index];
               return ListTile(
@@ -1699,12 +1713,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _ => theme.colorScheme.primary,
     };
     return Container(
-      width: 34,
-      height: 34,
+      width: 38,
+      height: 38,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
+        color: color.withValues(alpha: 0.11),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         source.label,
@@ -1722,7 +1736,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final scheme = theme.colorScheme;
     return Positioned(
       left: 16,
-      bottom: 300,
+      bottom: _panelHeight + 24,
       // 给定明确尺寸，避免 Column 在 Positioned 里被拉成整屏导致点击区域错位
       width: size + 24,
       height: size + 42,
@@ -1730,8 +1744,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         mainAxisSize: MainAxisSize.min,
         children: [
           Material(
-            color: scheme.surface.withValues(alpha: 0.9),
-            borderRadius: BorderRadius.circular(8),
+            color: scheme.surface.withValues(alpha: 0.92),
+            borderRadius: BorderRadius.circular(10),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               child: Text(
@@ -1754,7 +1768,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               height: size,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xCC1B1B1F),
+                color: AppColors.night.withValues(alpha: 0.82),
                 border: Border.all(
                   color: Colors.white.withValues(alpha: 0.25),
                   width: 1.5,
@@ -1782,7 +1796,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       height: 46,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: scheme.primary,
+                        gradient: AppColors.accentGradient,
                         border: Border.all(color: Colors.white, width: 2),
                       ),
                       child: const Icon(
@@ -1803,8 +1817,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _buildMapControls(ThemeData theme) {
     return Positioned(
-      right: 12,
-      bottom: 236,
+      right: 14,
+      bottom: _panelHeight + 16,
       child: Column(
         children: [
           _ControlButton(
@@ -1816,25 +1830,39 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _ControlButton(
             icon: Icons.sports_esports_outlined,
             tooltip: _joystickOn ? '关闭摇杆' : '摇杆移动',
-            highlight: _joystickOn,
+            selected: _joystickOn,
             onTap: _toggleJoystick,
           ),
           const SizedBox(height: 10),
-          _ControlButton(
-            icon: Icons.add_rounded,
-            tooltip: '放大',
-            onTap: () => _map.move(
-              _mapCenter(),
-              min((_mapReady ? _map.camera.zoom : 16) + 1, 19),
+          // 放大与缩小合成一组，和其它单个按钮区分开。
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: AppColors.softShadow,
             ),
-          ),
-          const SizedBox(height: 10),
-          _ControlButton(
-            icon: Icons.remove_rounded,
-            tooltip: '缩小',
-            onTap: () => _map.move(
-              _mapCenter(),
-              max((_mapReady ? _map.camera.zoom : 16) - 1, 3),
+            child: Column(
+              children: [
+                _ControlButton(
+                  icon: Icons.add_rounded,
+                  tooltip: '放大',
+                  flat: true,
+                  onTap: () => _map.move(
+                    _mapCenter(),
+                    min((_mapReady ? _map.camera.zoom : 16) + 1, 19),
+                  ),
+                ),
+                Container(width: 24, height: 1, color: AppColors.line),
+                _ControlButton(
+                  icon: Icons.remove_rounded,
+                  tooltip: '缩小',
+                  flat: true,
+                  onTap: () => _map.move(
+                    _mapCenter(),
+                    max((_mapReady ? _map.camera.zoom : 16) - 1, 3),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 10),
@@ -1885,48 +1913,113 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// 面板高度随内容变化（地址行数、安全区），布局后读取实际高度供浮动控件避让。
+  void _measurePanel() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final height = _panelKey.currentContext?.size?.height;
+      if (height != null && (height - _panelHeight).abs() > 0.5) {
+        setState(() => _panelHeight = height);
+      }
+    });
+  }
+
   Widget _buildTargetPanel(ThemeData theme) {
     final scheme = theme.colorScheme;
     final shown = _config.coordSystem.fromGcj(_target);
     final accuracy = _realAccuracy;
-    final statusColor = _running ? const Color(0xFF17B978) : scheme.outline;
+    final statusColor = _running ? AppColors.success : AppColors.muted;
     final title =
         _targetName ?? (_resolving ? '正在解析地址…' : (_targetAddress ?? '地图选点'));
     final subtitle = _targetAddress ?? '未解析到地址';
+    _measurePanel();
 
     return Positioned(
       left: 0,
       right: 0,
       bottom: 0,
       child: Container(
-        decoration: BoxDecoration(
-          color: scheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          border: Border(top: BorderSide(color: scheme.outlineVariant)),
-          boxShadow: const [
+        key: _panelKey,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          boxShadow: [
             BoxShadow(
-              color: Color(0x16000000),
-              blurRadius: 18,
-              offset: Offset(0, -4),
+              color: Color(0x221E295A),
+              blurRadius: 24,
+              offset: Offset(0, -6),
             ),
           ],
         ),
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 38,
+                  width: 40,
                   height: 4,
-                  margin: const EdgeInsets.only(top: 8, bottom: 8),
+                  margin: const EdgeInsets.only(top: 10, bottom: 12),
                   decoration: BoxDecoration(
-                    color: scheme.outlineVariant,
+                    color: AppColors.line,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(8, 3, 10, 3),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 7,
+                            height: 7,
+                            decoration: BoxDecoration(
+                              color: statusColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            _running ? '模拟中' : '未启动',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: statusColor,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (accuracy != null) ...[
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          _realIsMock
+                              ? (_running
+                                    ? '系统已接管 ±${accuracy.round()} 米'
+                                    : '正在恢复真实定位…')
+                              : '真实定位 ±${accuracy.round()} 米'
+                                    '${_providerLabel(_realProvider)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 10),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1934,67 +2027,33 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: statusColor,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                _running ? '模拟中' : '未启动',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  color: statusColor,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              if (accuracy != null) ...[
-                                const SizedBox(width: 10),
-                                Flexible(
-                                  child: Text(
-                                    _realIsMock
-                                        ? (_running
-                                              ? '系统已接管 ±${accuracy.round()} 米'
-                                              : '正在恢复真实定位…')
-                                        : '真实定位 ±${accuracy.round()} 米'
-                                              '${_providerLabel(_realProvider)}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: theme.textTheme.labelSmall?.copyWith(
-                                      color: scheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                          const SizedBox(height: 4),
                           Text(
                             title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.ink,
                             ),
                           ),
+                          const SizedBox(height: 2),
                           Text(
                             subtitle,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: AppColors.muted,
                             ),
                           ),
                         ],
                       ),
                     ),
-                    IconButton(
+                    const SizedBox(width: 8),
+                    _RoundIconButton(
                       tooltip: '存为常用地点',
-                      icon: const Icon(Icons.star_border),
+                      icon: Icons.star_border_rounded,
                       onPressed: () => _savePlace(
                         Place(
                           name: _targetName ?? _targetAddress ?? '自定义位置',
@@ -2004,9 +2063,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                    IconButton(
+                    const SizedBox(width: 8),
+                    _RoundIconButton(
                       tooltip: '复制坐标',
-                      icon: const Icon(Icons.copy_rounded),
+                      icon: Icons.copy_rounded,
                       onPressed: () {
                         Clipboard.setData(
                           ClipboardData(text: formatLatLng(shown, digits: 6)),
@@ -2016,75 +2076,115 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerLowest,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: scheme.outlineVariant),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.place_outlined,
-                        size: 15,
-                        color: scheme.primary,
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          formatLatLng(shown, digits: 6),
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontFeatures: const [FontFeature.tabularFigures()],
+                const SizedBox(height: 12),
+                Material(
+                  color: AppColors.sunken,
+                  borderRadius: BorderRadius.circular(14),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: _openCoordinate,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.place_outlined,
+                            size: 17,
+                            color: AppColors.accent,
                           ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: scheme.primary.withValues(alpha: 0.10),
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: Text(
-                          _config.coordSystem.label,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: scheme.primary,
-                            fontWeight: FontWeight.w600,
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              formatLatLng(shown, digits: 6),
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: AppColors.body,
+                                fontWeight: FontWeight.w500,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
                           ),
-                        ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              _config.coordSystem.label,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: scheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
+                // 常用功能直接放在面板上，不必每次打开侧边菜单。
+                Row(
+                  children: [
+                    _QuickAction(
+                      icon: Icons.pin_drop_outlined,
+                      label: '坐标',
+                      color: AppColors.accent,
+                      onTap: _openCoordinate,
+                    ),
+                    _QuickAction(
+                      icon: Icons.route_outlined,
+                      label: '路线',
+                      color: AppColors.violet,
+                      onTap: _openRoute,
+                    ),
+                    _QuickAction(
+                      icon: Icons.star_outline_rounded,
+                      label: '常用',
+                      color: AppColors.amber,
+                      onTap: _openSaved,
+                    ),
+                    _QuickAction(
+                      icon: Icons.open_with_rounded,
+                      label: '微调',
+                      color: AppColors.sky,
+                      onTap: _openNudge,
+                    ),
+                    _QuickAction(
+                      icon: Icons.verified_outlined,
+                      label: '检测',
+                      color: AppColors.success,
+                      onTap: _openMockCheck,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
-                      child: FilledButton.icon(
+                      flex: 3,
+                      child: GradientFilledButton(
                         onPressed: _start,
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size.fromHeight(46),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                        icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 22),
                         label: Text(_running ? '更新到此位置' : '开始模拟'),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
+                      flex: 2,
                       child: OutlinedButton.icon(
                         onPressed: _running ? _stop : null,
                         style: OutlinedButton.styleFrom(
-                          minimumSize: const Size.fromHeight(46),
-                          side: BorderSide(color: scheme.outlineVariant),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+                          minimumSize: const Size.fromHeight(50),
+                          foregroundColor: AppColors.danger,
+                          side: BorderSide(
+                            color: _running
+                                ? AppColors.danger.withValues(alpha: 0.35)
+                                : AppColors.line,
                           ),
                         ),
                         icon: const Icon(Icons.stop_rounded, size: 20),
@@ -2102,43 +2202,124 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 }
 
+/// 面板上的常用功能：图标色块加文字，平均分布一行。
+class _QuickAction extends StatelessWidget {
+  const _QuickAction({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconTile(icon: icon, color: color, size: 40),
+              const SizedBox(height: 5),
+              Text(
+                label,
+                style: const TextStyle(fontSize: 12, color: AppColors.body),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 浅灰圆形图标按钮（收藏、复制）。
+class _RoundIconButton extends StatelessWidget {
+  const _RoundIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        backgroundColor: AppColors.sunken,
+        foregroundColor: AppColors.body,
+        fixedSize: const Size(42, 42),
+      ),
+      icon: Icon(icon, size: 21),
+    );
+  }
+}
+
+/// 地图右侧的浮动按钮：白色圆角方块；[highlight] 为渐变主色，[selected] 为浅色选中，
+/// [flat] 用于放进按钮组时去掉自身底色与阴影。
 class _ControlButton extends StatelessWidget {
   const _ControlButton({
     required this.icon,
     required this.onTap,
     this.tooltip,
     this.highlight = false,
+    this.selected = false,
+    this.flat = false,
   });
 
   final IconData icon;
   final VoidCallback onTap;
   final String? tooltip;
   final bool highlight;
+  final bool selected;
+  final bool flat;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final size = highlight ? 50.0 : 46.0;
+    final radius = BorderRadius.circular(16);
     return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: highlight ? scheme.primary : scheme.surface,
-        shape: BoxShape.circle,
-        border: highlight ? null : Border.all(color: scheme.outlineVariant),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x14000000),
-            blurRadius: 10,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
+      width: size,
+      height: size,
+      decoration: flat
+          ? null
+          : BoxDecoration(
+              gradient: highlight ? AppColors.accentGradient : null,
+              color: highlight
+                  ? null
+                  : (selected ? AppColors.accentSoft : Colors.white),
+              borderRadius: radius,
+              border: selected
+                  ? Border.all(color: AppColors.accent, width: 1.5)
+                  : null,
+              boxShadow: highlight
+                  ? const [
+                      BoxShadow(
+                        color: Color(0x554F46E5),
+                        blurRadius: 14,
+                        offset: Offset(0, 5),
+                      ),
+                    ]
+                  : AppColors.softShadow,
+            ),
       child: Material(
         color: Colors.transparent,
-        shape: const CircleBorder(),
+        borderRadius: radius,
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          customBorder: const CircleBorder(),
           onTap: onTap,
           child: Tooltip(
             message: tooltip ?? '',
@@ -2146,7 +2327,9 @@ class _ControlButton extends StatelessWidget {
               child: Icon(
                 icon,
                 size: 22,
-                color: highlight ? scheme.onPrimary : scheme.onSurface,
+                color: highlight
+                    ? Colors.white
+                    : (selected ? AppColors.accent : AppColors.ink),
               ),
             ),
           ),

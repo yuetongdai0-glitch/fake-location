@@ -50,12 +50,12 @@ export function renderReleasePage(input) {
   <title>虚拟定位 Android v${input.versionName}</title>
   <style>
     :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7f5;color:#172018}
-    main{width:min(560px,calc(100% - 40px));padding:32px;border-radius:20px;background:#fff;box-shadow:0 18px 60px #19321a1a}
-    h1{margin:0 0 8px;font-size:30px} p{color:#5a665b;line-height:1.7}
-    .download{display:block;margin:26px 0 18px;padding:15px 20px;border-radius:12px;background:#1f7a44;color:#fff;text-align:center;font-weight:700;text-decoration:none}
-    dl{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:0;font-size:14px}dt{color:#6b776c}dd{margin:0;word-break:break-all}
-    @media(prefers-color-scheme:dark){body{background:#111712;color:#eef5ef}main{background:#19211b}dd{color:#d7e3d8}}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f5fa;color:#0f172a}
+    main{width:min(560px,calc(100% - 40px));padding:32px;border-radius:20px;background:#fff;box-shadow:0 18px 60px #1e295a1a}
+    h1{margin:0 0 8px;font-size:30px} p{color:#64748b;line-height:1.7}
+    .download{display:block;margin:26px 0 18px;padding:15px 20px;border-radius:16px;background:linear-gradient(90deg,#4f46e5,#8b5cf6);color:#fff;text-align:center;font-weight:700;text-decoration:none}
+    dl{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:0;font-size:14px}dt{color:#64748b}dd{margin:0;word-break:break-all}
+    @media(prefers-color-scheme:dark){body{background:#0f1021;color:#eef0ff}main{background:#1a1b36}dd{color:#d6dbf5}}
   </style>
 </head>
 <body><main>

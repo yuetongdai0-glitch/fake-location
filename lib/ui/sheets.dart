@@ -13,6 +13,7 @@ import '../core/models.dart';
 import '../core/mock_diagnostic.dart';
 import '../core/storage.dart';
 import '../core/user_message.dart';
+import 'style.dart';
 
 /// 常用地点 / 最近记录面板。
 class SavedPlacesSheet extends StatefulWidget {
@@ -1168,22 +1169,38 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
 
     return SingleChildScrollView(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Text('检测模拟是否生效', style: theme.textTheme.titleMedium),
-                const Spacer(),
+                Expanded(
+                  child: Text(
+                    '检测模拟是否生效',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                if (report != null && !_loading && _error == null)
+                  TextButton.icon(
+                    onPressed: _copyReport,
+                    icon: const Icon(Icons.copy_outlined, size: 17),
+                    label: const Text('复制检测结果'),
+                  ),
                 IconButton(
                   tooltip: '重新检测',
                   onPressed: _loading ? null : _refresh,
+                  style: IconButton.styleFrom(
+                    backgroundColor: AppColors.sunken,
+                  ),
                   icon: const Icon(Icons.refresh, size: 20),
                 ),
               ],
             ),
+            const SizedBox(height: 8),
             if (_loading)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 32),
@@ -1193,153 +1210,158 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
               Text('检测失败：$_error', style: theme.textTheme.bodySmall)
             else if (report != null) ...[
               _verdict(theme, report),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: _copyReport,
-                  icon: const Icon(Icons.copy_outlined, size: 18),
-                  label: const Text('复制检测结果'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              if (report.serviceRunning && report.pushedWgs != null)
-                _row(
-                  theme,
-                  '正在模拟的坐标',
-                  formatLatLng(report.pushedWgs!, digits: 6),
-                  ok: true,
-                ),
-              _row(
-                theme,
-                '模拟服务',
-                report.serviceRunning ? '运行中' : '未运行',
-                ok: report.serviceRunning,
-              ),
-              _row(
-                theme,
-                '坐标推送',
-                report.pushCount == 0
-                    ? '尚未推送'
-                    : '已推送 ${report.pushCount} 次'
-                          '${report.elapsedMs >= 0 ? '，${(report.elapsedMs / 1000).toStringAsFixed(1)} 秒前' : ''}',
-                ok:
-                    report.pushCount > 0 &&
-                    report.elapsedMs >= 0 &&
-                    report.elapsedMs < 5000,
-              ),
-              _row(
-                theme,
-                '接管的定位源',
-                report.providers.isEmpty
-                    ? '无（可能未获授权）'
-                    : report.providers.map(_providerName).join(' / '),
-                ok: report.hasFullCoverage,
-              ),
-              for (final provider in report.providerLocations)
-                _row(
-                  theme,
-                  '${_providerName(provider.provider)}读回',
-                  (provider.error == null
-                          ? null
-                          : userMessage(
-                              Exception(provider.error),
-                              fallback: '暂时无法读取此定位源',
-                            )) ??
-                      (provider.point == null
-                          ? '暂无缓存，尚未确认'
-                          : '${provider.isMock ? '模拟' : '真实'} · '
-                                '${formatDistance(Coord.distanceMeters(target, provider.point!))} 偏差 · '
-                                '${(provider.ageMs / 1000).toStringAsFixed(1)} 秒前'),
-                  ok: provider.matchesTarget(target),
-                ),
-              for (final error in report.providerErrors.entries)
-                _row(
-                  theme,
-                  '${_providerName(error.key)}推送',
-                  userMessage(Exception(error.value), fallback: '定位源推送失败，请重试'),
-                  ok: false,
-                ),
-              _row(
-                theme,
-                '无线网络与扫描',
-                '${report.wifiEnabled ? '无线网络已开启' : '无线网络已关闭'} · '
-                    '${report.wifiScanEnabled ? '后台扫描已开启' : '后台扫描已关闭'}',
-                ok: true,
-              ),
-              _row(
-                theme,
-                '电池优化',
-                report.ignoringBatteryOptimizations == null
-                    ? '暂时无法读取'
-                    : report.ignoringBatteryOptimizations!
-                    ? '已允许不受电池优化限制'
-                    : '仍受系统电池优化限制',
-                ok: report.ignoringBatteryOptimizations,
-              ),
-              _row(
-                theme,
-                '省电模式',
-                report.powerSaveMode == null
-                    ? '暂时无法读取'
-                    : report.powerSaveMode!
-                    ? '已开启，可能降低后台更新频率'
-                    : '未开启',
-                ok: report.powerSaveMode == null
-                    ? null
-                    : !report.powerSaveMode!,
-              ),
-              _row(
-                theme,
-                '后台运行限制',
-                report.backgroundRestricted == null
-                    ? '当前系统未提供此状态'
-                    : report.backgroundRestricted!
-                    ? '系统已限制本应用后台运行'
-                    : '系统未限制本应用后台运行',
-                ok: report.backgroundRestricted == null
-                    ? null
-                    : !report.backgroundRestricted!,
-              ),
-              for (final error in report.powerErrors.values)
-                _row(
-                  theme,
-                  '后台状态读取',
-                  userMessage(Exception(error), fallback: '暂时无法读取后台限制'),
-                  ok: null,
-                ),
-              if (widget.onOpenAppSettings != null)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    onPressed: widget.onOpenAppSettings,
-                    icon: const Icon(Icons.battery_saver_outlined, size: 18),
-                    label: const Text('检查后台运行设置'),
+              _section(theme, '模拟服务', [
+                if (report.serviceRunning && report.pushedWgs != null)
+                  _row(
+                    theme,
+                    '正在模拟的坐标',
+                    formatLatLng(report.pushedWgs!, digits: 6),
+                    ok: true,
                   ),
-                ),
-              _row(
-                theme,
-                '系统读回位置',
-                report.systemWgs == null
-                    ? '读取失败'
-                    : '${report.serviceRunning ? '' : '上次 '}'
-                          '${formatLatLng(report.systemWgs!, digits: 5)}'
-                          '${report.systemAccuracy == null ? '' : ' ±${report.systemAccuracy!.round()} 米'}',
-                ok: report.systemWgs != null && report.serviceRunning,
-              ),
-              _row(
-                theme,
-                '系统标记',
-                report.systemIsMock ? '模拟定位' : '普通真实定位',
-                ok: report.systemIsMock && report.serviceRunning,
-              ),
-              if (distance != null)
                 _row(
                   theme,
-                  '与目标偏差',
-                  formatDistance(distance),
-                  ok: distance < 50,
+                  '模拟服务',
+                  report.serviceRunning ? '运行中' : '未运行',
+                  ok: report.serviceRunning,
                 ),
-              const SizedBox(height: 14),
+                _row(
+                  theme,
+                  '坐标推送',
+                  report.pushCount == 0
+                      ? '尚未推送'
+                      : '已推送 ${report.pushCount} 次'
+                            '${report.elapsedMs >= 0 ? '，${(report.elapsedMs / 1000).toStringAsFixed(1)} 秒前' : ''}',
+                  ok:
+                      report.pushCount > 0 &&
+                      report.elapsedMs >= 0 &&
+                      report.elapsedMs < 5000,
+                ),
+                _row(
+                  theme,
+                  '接管的定位源',
+                  report.providers.isEmpty
+                      ? '无（可能未获授权）'
+                      : report.providers.map(_providerName).join(' / '),
+                  ok: report.hasFullCoverage,
+                ),
+                for (final provider in report.providerLocations)
+                  _row(
+                    theme,
+                    '${_providerName(provider.provider)}读回',
+                    (provider.error == null
+                            ? null
+                            : userMessage(
+                                Exception(provider.error),
+                                fallback: '暂时无法读取此定位源',
+                              )) ??
+                        (provider.point == null
+                            ? '暂无缓存，尚未确认'
+                            : '${provider.isMock ? '模拟' : '真实'} · '
+                                  '${formatDistance(Coord.distanceMeters(target, provider.point!))} 偏差 · '
+                                  '${(provider.ageMs / 1000).toStringAsFixed(1)} 秒前'),
+                    ok: provider.matchesTarget(target),
+                  ),
+                for (final error in report.providerErrors.entries)
+                  _row(
+                    theme,
+                    '${_providerName(error.key)}推送',
+                    userMessage(
+                      Exception(error.value),
+                      fallback: '定位源推送失败，请重试',
+                    ),
+                    ok: false,
+                  ),
+              ]),
+              _section(theme, '系统读回', [
+                _row(
+                  theme,
+                  '系统读回位置',
+                  report.systemWgs == null
+                      ? '读取失败'
+                      : '${report.serviceRunning ? '' : '上次 '}'
+                            '${formatLatLng(report.systemWgs!, digits: 5)}'
+                            '${report.systemAccuracy == null ? '' : ' ±${report.systemAccuracy!.round()} 米'}',
+                  ok: report.systemWgs != null && report.serviceRunning,
+                ),
+                _row(
+                  theme,
+                  '系统标记',
+                  report.systemIsMock ? '模拟定位' : '普通真实定位',
+                  ok: report.systemIsMock && report.serviceRunning,
+                ),
+                if (distance != null)
+                  _row(
+                    theme,
+                    '与目标偏差',
+                    formatDistance(distance),
+                    ok: distance < 50,
+                  ),
+              ]),
+              _section(
+                theme,
+                '后台运行',
+                [
+                  _row(
+                    theme,
+                    '无线网络与扫描',
+                    '${report.wifiEnabled ? '无线网络已开启' : '无线网络已关闭'} · '
+                        '${report.wifiScanEnabled ? '后台扫描已开启' : '后台扫描已关闭'}',
+                    ok: null,
+                  ),
+                  _row(
+                    theme,
+                    '电池优化',
+                    report.ignoringBatteryOptimizations == null
+                        ? '暂时无法读取'
+                        : report.ignoringBatteryOptimizations!
+                        ? '已允许不受电池优化限制'
+                        : '仍受系统电池优化限制',
+                    ok: report.ignoringBatteryOptimizations,
+                  ),
+                  _row(
+                    theme,
+                    '省电模式',
+                    report.powerSaveMode == null
+                        ? '暂时无法读取'
+                        : report.powerSaveMode!
+                        ? '已开启，可能降低后台更新频率'
+                        : '未开启',
+                    ok: report.powerSaveMode == null
+                        ? null
+                        : !report.powerSaveMode!,
+                  ),
+                  _row(
+                    theme,
+                    '后台运行限制',
+                    report.backgroundRestricted == null
+                        ? '当前系统未提供此状态'
+                        : report.backgroundRestricted!
+                        ? '系统已限制本应用后台运行'
+                        : '系统未限制本应用后台运行',
+                    ok: report.backgroundRestricted == null
+                        ? null
+                        : !report.backgroundRestricted!,
+                  ),
+                  for (final error in report.powerErrors.values)
+                    _row(
+                      theme,
+                      '后台状态读取',
+                      userMessage(Exception(error), fallback: '暂时无法读取后台限制'),
+                      ok: null,
+                    ),
+                ],
+                footer: widget.onOpenAppSettings == null
+                    ? null
+                    : TextButton.icon(
+                        onPressed: widget.onOpenAppSettings,
+                        icon: const Icon(
+                          Icons.battery_saver_outlined,
+                          size: 18,
+                        ),
+                        label: const Text('检查后台运行设置'),
+                      ),
+              ),
+              const SizedBox(height: 16),
               Row(
                 children: [
                   Expanded(
@@ -1349,9 +1371,10 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
                       label: const Text('重新推送'),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Expanded(
-                    child: FilledButton.icon(
+                    child: GradientFilledButton(
+                      height: 48,
                       onPressed: () async {
                         await widget.onOpenExternalApp('com.autonavi.minimap');
                       },
@@ -1361,15 +1384,7 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
                   ),
                 ],
               ),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: () => widget.onOpenExternalApp('com.tencent.mm'),
-                  icon: const Icon(Icons.chat_outlined, size: 18),
-                  label: const Text('打开微信'),
-                ),
-              ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
               Text(
                 report.matchesTarget(target)
                     ? '系统读回通过，目标应用仍可能使用独立定位。'
@@ -1381,6 +1396,53 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  /// 一组检测项：浅灰圆角卡片，标题在上，行之间用细线分隔。
+  Widget _section(
+    ThemeData theme,
+    String title,
+    List<Widget> rows, {
+    Widget? footer,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            child: Text(
+              title,
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: AppColors.muted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.sunken,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Column(
+              children: [
+                for (var i = 0; i < rows.length; i++) ...[
+                  if (i > 0) const Divider(height: 1),
+                  rows[i],
+                ],
+                if (footer != null) ...[
+                  const Divider(height: 1),
+                  Align(alignment: Alignment.centerLeft, child: footer),
+                ],
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1397,37 +1459,37 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
     final String detail;
 
     if (!report.mockAppSelected) {
-      color = const Color(0xFFD93025);
+      color = AppColors.danger;
       icon = Icons.error_outline;
       title = '未设为模拟位置应用';
       detail = '在开发者选项中选择“虚拟定位”。';
     } else if (!report.isPushing) {
-      color = const Color(0xFFD93025);
+      color = AppColors.danger;
       icon = Icons.error_outline;
       title = '模拟服务没有在推送';
       detail = '点击重新推送，检查后台权限。';
     } else if (!report.hasFullCoverage) {
-      color = const Color(0xFFE8710A);
+      color = AppColors.warning;
       icon = Icons.warning_amber_rounded;
       title = '部分定位源尚未接管';
       detail = '查看下方失败原因，服务正在重试。';
     } else if (!report.isEffective) {
-      color = const Color(0xFFE8710A);
+      color = AppColors.warning;
       icon = Icons.warning_amber_rounded;
       title = '部分定位源尚未确认';
       detail = '请重新检测并查看逐源结果。';
     } else if (!report.systemIsMock) {
-      color = const Color(0xFFE8710A);
+      color = AppColors.warning;
       icon = Icons.warning_amber_rounded;
       title = '系统仍返回真实定位';
       detail = '检查模拟位置授权后重新推送。';
     } else if (!report.matchesTarget(_checkedTarget(report))) {
-      color = const Color(0xFFE8710A);
+      color = AppColors.warning;
       icon = Icons.warning_amber_rounded;
       title = '系统位置与目标不一致';
       detail = '至少一源偏差超过 50 米，请重新推送。';
     } else {
-      color = const Color(0xFF17B978);
+      color = AppColors.success;
       icon = Icons.check_circle_outline;
       title = '系统定位源校验通过';
       detail = '各系统源已读回目标附近的模拟坐标。';
@@ -1435,17 +1497,16 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(width: 8),
+          IconTile(icon: icon, color: color, size: 42, solid: true),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1479,31 +1540,42 @@ class _MockCheckSheetState extends State<MockCheckSheet> {
     String value, {
     required bool? ok,
   }) {
+    final color = ok == null
+        ? AppColors.muted
+        : ok
+        ? AppColors.success
+        : AppColors.danger;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 96,
+            width: 100,
             child: Text(
               label,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+                color: AppColors.muted,
               ),
             ),
           ),
           Expanded(
             child: Text(
               value,
+              textAlign: TextAlign.right,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: ok == null
-                    ? theme.colorScheme.onSurfaceVariant
-                    : ok
-                    ? theme.colorScheme.onSurface
-                    : const Color(0xFFD93025),
-                fontWeight: ok == false ? FontWeight.w600 : FontWeight.w500,
+                color: ok == false ? AppColors.danger : AppColors.ink,
+                fontWeight: FontWeight.w600,
               ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Padding(
+            padding: const EdgeInsets.only(top: 5),
+            child: Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
           ),
         ],

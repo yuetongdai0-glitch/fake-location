@@ -13,6 +13,7 @@ import '../core/storage.dart';
 import '../core/user_message.dart';
 import 'route_settings_sheet.dart';
 import 'saved_routes_sheet.dart';
+import 'style.dart';
 
 /// 路线模拟页：在地图上点出途经点，按速度沿路线移动，可循环/往返。
 class RoutePage extends StatefulWidget {
@@ -1094,13 +1095,7 @@ class _RoutePageState extends State<RoutePage> {
                 children: [
                   Expanded(
                     flex: 2,
-                    child: FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 14,
-                        ),
-                      ),
+                    child: GradientFilledButton(
                       onPressed: _starting || _checkingStatus
                           ? null
                           : _running

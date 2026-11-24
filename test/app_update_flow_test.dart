@@ -124,6 +124,41 @@ void main() {
     expect(calls.every((uri) => uri.host != 'example.com'), isTrue);
   });
 
+  test('慢网络下一个入口先返回后只再等宽限时间，不被挂起的入口拖到总时限', () async {
+    final never = Completer<http.Response>();
+    final watch = Stopwatch()..start();
+    final result = await fetchLatestUpdate(
+      client: MockClient(
+        (request) => request.url.host == 'raw.githubusercontent.com'
+            ? Future.value(http.Response(jsonEncode(manifest(code: 17)), 200))
+            : never.future,
+      ),
+      timeout: const Duration(seconds: 5),
+      grace: const Duration(milliseconds: 50),
+    );
+    expect(result.versionCode, 17);
+    expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+  });
+
+  test('入口全部连不上时提示检查网络，而不是笼统的检查失败', () async {
+    await expectLater(
+      fetchLatestUpdate(
+        client: MockClient((_) async => throw http.ClientException('离线')),
+      ),
+      throwsA(
+        isA<FormatException>().having((e) => e.message, '原因', contains('检查网络')),
+      ),
+    );
+    await expectLater(
+      fetchLatestUpdate(
+        client: MockClient((_) async => http.Response('<html></html>', 503)),
+      ),
+      throwsA(
+        isA<FormatException>().having((e) => e.message, '原因', '检查失败，请重试'),
+      ),
+    );
+  });
+
   test('安装包来源限制到自己的发行路径，不接受其他GitHub仓库', () {
     for (final url in [
       'https://someone.github.io/fake-location-releases/releases/android/latest.apk',

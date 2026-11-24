@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -146,33 +147,64 @@ class AppUpdate {
   };
 }
 
-/// 三个固定入口并发读取，在统一时限内采用最高构建号，失败不等于没有更新。
+/// 三个固定入口并发读取，采用最高构建号，失败不等于没有更新。
+///
+/// 国内移动网络首次连接 GitHub 常需数秒到十几秒，[timeout] 是整次检查的总时限；
+/// 任一入口成功后最多再等 [grace] 让其余入口返回，避免慢入口拖住结果，
+/// 也保留多入口比对，防止单个缓存节点把旧版本误报为最新。
 Future<AppUpdate> fetchLatestUpdate({
   http.Client? client,
-  Duration timeout = const Duration(seconds: 8),
+  Duration timeout = const Duration(seconds: 20),
+  Duration grace = const Duration(seconds: 3),
 }) async {
   final actualClient = client ?? http.Client();
   final requestId = DateTime.now().microsecondsSinceEpoch.toString();
+  final updates = <AppUpdate>[];
+  var networkFailures = 0;
+  var pending = updateManifestSources.length;
+  final done = Completer<void>();
+  Timer? graceTimer;
+  void finish() {
+    if (!done.isCompleted) done.complete();
+  }
+
+  final deadline = Timer(timeout, finish);
   try {
-    final results = await Future.wait(
-      updateManifestSources.map((source) async {
-        try {
-          return await _readManifest(
-            actualClient,
-            source.replace(
-              queryParameters: {...source.queryParameters, '_': requestId},
-            ),
-          ).timeout(timeout);
-        } catch (_) {
-          return null;
-        }
-      }),
-    );
-    final updates = results.whereType<AppUpdate>().toList()
+    for (final source in updateManifestSources) {
+      unawaited(
+        _readManifest(
+              actualClient,
+              source.replace(
+                queryParameters: {...source.queryParameters, '_': requestId},
+              ),
+            )
+            .timeout(timeout)
+            .then<void>(
+              (update) {
+                updates.add(update);
+                graceTimer ??= Timer(grace, finish);
+              },
+              onError: (Object error) {
+                if (_isNetworkError(error)) networkFailures++;
+              },
+            )
+            .whenComplete(() {
+              if (--pending == 0) finish();
+            }),
+      );
+    }
+    await done.future;
+    if (updates.isEmpty) {
+      throw FormatException(
+        networkFailures == updateManifestSources.length || pending > 0
+            ? '无法连接更新服务器，请检查网络后重试'
+            : '检查失败，请重试',
+      );
+    }
+    final snapshot = [...updates]
       ..sort((left, right) => right.versionCode.compareTo(left.versionCode));
-    if (updates.isEmpty) throw const FormatException('检查失败，请重试');
-    final newest = updates.first;
-    if (updates.any(
+    final newest = snapshot.first;
+    if (snapshot.any(
       (update) =>
           update.versionCode == newest.versionCode &&
           (update.sha256 != newest.sha256 ||
@@ -186,9 +218,18 @@ Future<AppUpdate> fetchLatestUpdate({
     }
     return newest;
   } finally {
+    deadline.cancel();
+    graceTimer?.cancel();
     if (client == null) actualClient.close();
   }
 }
+
+/// 连接、握手与超时属于网络问题，提示用户检查网络；其余视为清单内容异常。
+bool _isNetworkError(Object error) =>
+    error is TimeoutException ||
+    error is SocketException ||
+    error is HandshakeException ||
+    error is http.ClientException;
 
 /// 清单限制长度并拒绝跨来源跳转，避免把错误页、代理响应或超大数据当作版本信息。
 Future<AppUpdate> _readManifest(http.Client client, Uri uri) async {
